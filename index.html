@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta http-equiv="X-UA-Compatible" content="IE=edge"/>
+  <title>CineVault — Movie Discovery &amp; Download Hub</title>
+  <meta name="description" content="Discover 4,800+ movies. Browse by language, genre, and rating. Get instant torrent download links from YTS, 1337x, The Pirate Bay and more."/>
+  <meta name="theme-color" content="#0a0a0f"/>
+  <meta name="referrer" content="no-referrer"/>
+
+  <!-- Preconnect for fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous"/>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet"/>
+
+
+
+
+  <!-- Favicon inline SVG -->
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎬</text></svg>"/>
+
+  <link rel="stylesheet" href="style.css"/>
+</head>
+<body>
+
+<!-- Loading Overlay -->
+<div class="loading-overlay" id="loading-overlay">
+  <div class="loading-spinner"></div>
+  <div class="loading-text">Loading CineVault...</div>
+</div>
+
+<!-- ======================== PARTICLES BG ======================== -->
+<canvas id="particles-canvas" aria-hidden="true"></canvas>
+
+<!-- ======================== NAV ======================== -->
+<nav class="navbar" id="navbar" role="navigation" aria-label="Main navigation">
+  <div class="nav-inner">
+    <a href="#home" class="nav-logo" aria-label="CineVault home">
+      <span class="logo-icon" aria-hidden="true">🎬</span>
+      <span class="logo-text">CineVault</span>
+    </a>
+
+    <div class="nav-links" id="nav-links">
+      <a href="index.html#home"        class="nav-link" data-section="home">Home</a>
+      <a href="movies.html?type=movie" class="nav-link" data-section="browse">Movies</a>
+      <a href="movies.html?type=anime" class="nav-link" data-section="anime">Anime</a>
+      <a href="index.html#by-language" class="nav-link" data-section="by-language">Languages</a>
+      <a href="index.html#watchlist"   class="nav-link" data-section="watchlist">
+        Watchlist <span class="wl-badge" id="nav-wl-badge" style="display:none">0</span>
+      </a>
+    </div>
+
+    <div class="nav-actions">
+      <button class="icon-btn theme-toggle" id="theme-toggle" aria-label="Toggle theme" title="Toggle light/dark">
+        <span class="theme-icon" id="theme-icon">🌙</span>
+      </button>
+      <button class="icon-btn" id="mobile-menu-btn" aria-label="Open menu" aria-expanded="false">☰</button>
+    </div>
+  </div>
+</nav>
+
+<!-- Mobile Drawer -->
+<div class="mobile-drawer" id="mobile-drawer" role="dialog" aria-label="Navigation menu">
+  <div class="drawer-backdrop" id="drawer-backdrop"></div>
+  <div class="drawer-panel">
+    <div class="drawer-header">
+      <span class="logo-text" style="font-size:1.3rem;font-weight:800">🎬 CineVault</span>
+      <button class="icon-btn" id="drawer-close" aria-label="Close menu">✕</button>
+    </div>
+    <nav class="drawer-nav">
+      <a href="index.html#home"        class="drawer-link" onclick="closeDrawer()">🏠 Home</a>
+      <a href="movies.html?type=movie" class="drawer-link" onclick="closeDrawer()">🎥 Movies</a>
+      <a href="movies.html?type=anime" class="drawer-link" onclick="closeDrawer()">🎌 Anime</a>
+      <a href="index.html#by-language" class="drawer-link" onclick="closeDrawer()">🌍 By Language</a>
+      <a href="index.html#watchlist"   class="drawer-link" onclick="closeDrawer()">❤️ Watchlist</a>
+    </nav>
+    <div class="drawer-footer">
+      <button class="theme-toggle-full" id="drawer-theme-btn">🌙 Toggle Theme</button>
+    </div>
+  </div>
+</div>
+
+<!-- ======================== HERO ======================== -->
+<section class="hero-section" id="home" aria-labelledby="hero-title">
+  <div class="hero-content">
+    <div class="hero-badge" aria-label="4800 plus movies badge">
+      <span class="badge-dot"></span> 4,800+ Movies Available
+    </div>
+    <h1 class="hero-title" id="hero-title">
+      Your Ultimate<br/>
+      <span class="gradient-text">Movie Vault</span>
+    </h1>
+    <p class="hero-subtitle">
+      Discover cinema from <strong>37 languages</strong>, filter by genre &amp; rating,
+      and get instant torrent links — all in one place.
+    </p>
+
+    <!-- Search -->
+    <div class="hero-search-wrap" role="search">
+      <div class="search-box" id="search-box">
+        <span class="search-icon" aria-hidden="true">🔍</span>
+        <input
+          type="search"
+          id="hero-search"
+          placeholder="Search movies, genres..."
+          autocomplete="off"
+          autocorrect="off"
+          spellcheck="false"
+          aria-label="Search movies"
+        />
+        <button class="search-clear" id="search-clear" aria-label="Clear search" style="display:none">✕</button>
+      </div>
+      <div class="search-suggestions" id="search-suggestions" role="listbox" aria-label="Search suggestions"></div>
+    </div>
+
+    <!-- Genre Quick Tabs -->
+    <div class="genre-quick-tabs" id="genre-quick-tabs" role="tablist" aria-label="Quick genre filter">
+      <button class="genre-tab active" data-genre="" role="tab" aria-selected="true" onclick="window.location.href='movies.html'">All Movies</button>
+    </div>
+
+    <!-- Quick Browse Button -->
+    <div style="margin-bottom: 40px; z-index: 15; position: relative;">
+      <a href="movies.html?type=movie" style="background: linear-gradient(135deg, var(--accent-1), var(--accent-2)); padding: 14px 28px; border-radius: 99px; font-weight: 700; color: #fff; font-size: 1.1rem; display: inline-block; box-shadow: 0 10px 30px rgba(124, 58, 237, 0.4); margin-right: 12px; transition: transform 0.3s ease;">Browse Movies ➔</a>
+      <a href="movies.html?type=anime" style="background: var(--bg-card2); border: 2px solid var(--accent-1); padding: 12px 28px; border-radius: 99px; font-weight: 700; color: var(--text-primary); font-size: 1.1rem; display: inline-block; transition: transform 0.3s ease;">Explore Anime 🎌</a>
+    </div>
+
+    <!-- Stats -->
+    <div class="hero-stats" aria-label="Site statistics">
+      <div class="stat">
+        <span class="stat-num count-up" id="stat-movies" data-target="4803">0</span>
+        <span class="stat-label">Movies</span>
+      </div>
+      <div class="stat-sep" aria-hidden="true"></div>
+      <div class="stat">
+        <span class="stat-num count-up" id="stat-langs" data-target="37">0</span>
+        <span class="stat-label">Languages</span>
+      </div>
+      <div class="stat-sep" aria-hidden="true"></div>
+      <div class="stat">
+        <span class="stat-num count-up" id="stat-genres" data-target="20">0</span>
+        <span class="stat-label">Genres</span>
+      </div>
+      <div class="stat-sep" aria-hidden="true"></div>
+      <div class="stat">
+        <span class="stat-num count-up" id="stat-torrent" data-target="6">0</span>
+        <span class="stat-label">Torrent Sites</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Decorative orbs -->
+  <div class="orb-wrap" aria-hidden="true">
+    <div class="orb orb1"></div>
+    <div class="orb orb2"></div>
+    <div class="orb orb3"></div>
+  </div>
+
+  <!-- Scroll cue -->
+  <div class="scroll-cue" aria-hidden="true">
+    <span class="scroll-arrow">⌄</span>
+    <span class="scroll-text">Scroll to explore</span>
+  </div>
+</section>
+
+<!-- ======================== TRENDING ======================== -->
+<section class="section trending-section" aria-labelledby="trending-title">
+  <div class="section-header">
+    <h2 class="section-title" id="trending-title">🔥 Trending Now</h2>
+    <a href="movies.html" class="see-all-link">View all →</a>
+  </div>
+  <div class="strip-wrapper">
+    <button class="strip-nav strip-nav-left" id="strip-left" aria-label="Scroll left">‹</button>
+    <div class="cards-strip" id="trending-strip" role="list" aria-label="Trending movies"></div>
+    <button class="strip-nav strip-nav-right" id="strip-right" aria-label="Scroll right">›</button>
+  </div>
+</section>
+
+<!-- ======================== BY LANGUAGE ======================== -->
+<section class="section language-section" id="by-language" aria-labelledby="lang-section-title">
+  <div class="section-header">
+    <div>
+      <h2 class="section-title" id="lang-section-title">🌍 Movies by Language</h2>
+      <p class="section-subtitle">Explore world cinema — click any language to browse its films</p>
+    </div>
+  </div>
+
+  <!-- World map graphic strip at top -->
+  <div class="lang-region-tabs" id="lang-region-tabs" role="tablist" aria-label="Language regions">
+    <button class="region-tab active" data-region="all" role="tab" aria-selected="true">🌐 All</button>
+    <button class="region-tab" data-region="eu"  role="tab" aria-selected="false">🇪🇺 European</button>
+    <button class="region-tab" data-region="as"  role="tab" aria-selected="false">🌏 Asian</button>
+    <button class="region-tab" data-region="me"  role="tab" aria-selected="false">🕌 Middle Eastern</button>
+    <button class="region-tab" data-region="am"  role="tab" aria-selected="false">🌎 Americas</button>
+  </div>
+
+  <div class="language-pills-grid" id="language-pills" role="list" aria-label="Languages"></div>
+
+  <!-- Lang movies panel -->
+  <div class="lang-movies-panel" id="lang-movies-panel" style="display:none" aria-live="polite">
+    <div class="panel-header">
+      <h3 class="panel-title" id="panel-title"></h3>
+      <button class="close-panel-btn" id="close-panel-btn" aria-label="Close language panel">✕ Close</button>
+    </div>
+    <div class="cards-grid" id="lang-movies-grid" role="list" aria-label="Movies in selected language"></div>
+    <div class="load-more-wrap" id="lang-load-more-wrap" style="display:none">
+      <button class="load-more-btn" id="lang-load-more-btn">Show More</button>
+    </div>
+  </div>
+</section>
+
+<!-- ======================== WATCHLIST ======================== -->
+<section class="section watchlist-section" id="watchlist" aria-labelledby="watchlist-title">
+  <div class="section-header">
+    <h2 class="section-title" id="watchlist-title">❤️ Your Watchlist</h2>
+    <button class="clear-wl-btn" id="clear-wl-btn" aria-label="Clear watchlist">Clear All</button>
+  </div>
+  <div class="cards-grid" id="watchlist-grid" role="list" aria-label="Watchlist movies">
+    <div class="empty-state" id="wl-empty">
+      <div class="empty-icon" aria-hidden="true">🎭</div>
+      <h3>Your watchlist is empty</h3>
+      <p>Click the ❤️ on any movie card to add it here.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ======================== FOOTER ======================== -->
+<footer class="site-footer" role="contentinfo">
+  <div class="footer-inner">
+    <div class="footer-brand">
+      <span class="logo-icon" aria-hidden="true">🎬</span>
+      <span class="logo-text">CineVault</span>
+    </div>
+    <p class="footer-note">
+      Data from the TMDB 5000 Movie Dataset. Torrent links redirect to third-party search pages.
+      Please comply with copyright laws in your country. CineVault does not host any files.
+    </p>
+    <div class="footer-links" aria-label="Footer links">
+      <a href="index.html#home">Home</a>
+      <span aria-hidden="true">·</span>
+      <a href="movies.html?type=movie">Movies</a>
+      <span aria-hidden="true">·</span>
+      <a href="movies.html?type=anime">Anime</a>
+      <span aria-hidden="true">·</span>
+      <a href="index.html#by-language">Languages</a>
+      <span aria-hidden="true">·</span>
+      <a href="index.html#watchlist">Watchlist</a>
+    </div>
+    <p class="footer-copy">© 2025 CineVault · Built for movie lovers everywhere</p>
+  </div>
+</footer>
+
+<!-- ======================== MODAL ======================== -->
+<div class="modal-overlay" id="modal-overlay" role="dialog" aria-modal="true" aria-label="Movie details" style="display:none">
+  <div class="modal-box" id="modal-box">
+    <button class="modal-close-btn" id="modal-close-btn" aria-label="Close modal">✕</button>
+    <div class="modal-body" id="modal-body"></div>
+  </div>
+</div>
+
+<!-- ======================== TOAST ======================== -->
+<div class="toast" id="toast" role="alert" aria-live="assertive" aria-atomic="true"></div>
+
+<!-- ======================== BACK TO TOP ======================== -->
+<button class="back-to-top" id="back-to-top" aria-label="Back to top" title="Back to top">↑</button>
+
+<script src="app.js"></script>
+</body>
+</html>

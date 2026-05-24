@@ -1,0 +1,23 @@
+# SQLite databases
+cinevault.db
+*.db
+*.sqlite
+*.sqlite3
+
+# Large CSVs and JSON datasets
+reviews.csv
+tmdb_5000_credits.csv
+movies_data.json
+
+# Local environment and python caches
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+.venv
+env/
+venv/
+.pytest_cache/
+.vscode/
+.idea/
