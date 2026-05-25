@@ -78,6 +78,31 @@ body {
   transition: background-color var(--transition), color var(--transition);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  position: relative;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  top: -5vh;
+  left: -5vw;
+  width: 110vw;
+  height: 110vh;
+  background: linear-gradient(to bottom, rgba(10, 10, 15, 0.5), rgba(10, 10, 15, 0.85)), url('anime_bg_dark.png') center/cover no-repeat;
+  z-index: -10;
+  animation: liveBackground 40s ease-in-out infinite alternate;
+  opacity: 1;
+  pointer-events: none;
+  transition: background 0.5s ease;
+}
+
+[data-theme="light"] body::before {
+  background: linear-gradient(to bottom, rgba(255, 255, 255, 0.3), rgba(255, 255, 255, 0.7)), url('anime_bg.png') center/cover no-repeat;
+}
+
+@keyframes liveBackground {
+  0% { transform: translate(0, 0) scale(1); }
+  100% { transform: translate(3vw, 3vh) scale(1.05); }
 }
 
 /* Accessible focus states */
