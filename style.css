@@ -1998,6 +1998,24 @@ input, select {
   color: #8b5cf6 !important;
 }
 
+/* Anime source selector buttons */
+.anime-src-btn {
+  border-radius: var(--radius-sm) !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.02em;
+  transition: all 0.25s ease !important;
+  border: 1px solid transparent;
+}
+
+.anime-src-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 15px rgba(16, 185, 129, 0.3);
+}
+
+.anime-src-btn.active {
+  box-shadow: 0 4px 15px rgba(16, 185, 129, 0.3);
+}
+
 #anime-ep-grid {
   scrollbar-width: thin;
   scrollbar-color: rgba(139, 92, 246, 0.3) transparent;

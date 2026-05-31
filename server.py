@@ -489,6 +489,62 @@ def anikoto_search_title():
 
 
 # ============================================================
+# ANILIST ID MAPPING (MAL → AniList)
+# ============================================================
+# Videasy requires AniList IDs for anime streaming.
+# This endpoint converts MAL IDs to AniList IDs via the AniList GraphQL API.
+
+_anilist_cache = {}
+
+@app.route('/api/anilist/mal/<int:mal_id>', methods=['GET'])
+def get_anilist_id(mal_id):
+    """Convert a MAL ID to an AniList ID."""
+    # Check cache first
+    if mal_id in _anilist_cache:
+        return jsonify({'ok': True, 'mal_id': mal_id, 'anilist_id': _anilist_cache[mal_id]})
+
+    query = '''
+    query ($idMal: Int) {
+      Media(idMal: $idMal, type: ANIME) {
+        id
+        title {
+          romaji
+          english
+        }
+      }
+    }
+    '''
+    variables = {'idMal': mal_id}
+
+    try:
+        resp = requests.post(
+            'https://graphql.anilist.co',
+            json={'query': query, 'variables': variables},
+            timeout=10,
+            headers={'Content-Type': 'application/json', 'Accept': 'application/json'}
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        media = data.get('data', {}).get('Media')
+        if media and media.get('id'):
+            anilist_id = media['id']
+            _anilist_cache[mal_id] = anilist_id
+            return jsonify({
+                'ok': True,
+                'mal_id': mal_id,
+                'anilist_id': anilist_id,
+                'title': media.get('title', {})
+            })
+        else:
+            return jsonify({'ok': False, 'error': 'Not found on AniList', 'mal_id': mal_id})
+
+    except Exception as e:
+        print(f'[AniList] Error mapping MAL {mal_id}: {e}')
+        return jsonify({'ok': False, 'error': str(e), 'mal_id': mal_id})
+
+
+# ============================================================
 # STATIC FILE SERVING
 # ============================================================
 

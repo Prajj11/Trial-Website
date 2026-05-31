@@ -726,15 +726,36 @@ function openMovieModal(id) {
   modal.style.display = 'flex';
   document.body.style.overflow = 'hidden';
 
-  // Initialize kwik episode download grid for anime (after DOM updates)
+  // Initialize anime episode grid and streaming for anime
   if (isAnime) {
     const totalEps = parseInt(movie.episodes) || 0;
+
+    // Reset anime streaming state for this new modal
+    activeAnimeSource = 'videasy';
+    currentAnimeMovieId = movie.id;
+    activeAnimeAnilistId = null;
+    anikotoState = { episodes: [], seriesId: null, currentEp: null, lang: 'sub' };
+
+    // Build the episode number grid (quick-click buttons)
     if (totalEps > 0) {
       setTimeout(function () {
+        // Render clickable episode grid
+        const epGrid = document.getElementById('anime-ep-grid');
+        if (epGrid) {
+          let gridHtml = '';
+          for (let ep = 1; ep <= totalEps; ep++) {
+            gridHtml += '<button class="kwik-ep-btn anime-ep-grid-btn" data-ep="' + ep + '" onclick="playEpFromGrid(' + ep + ',' + movie.id + ')" style="padding:6px 4px;font-size:0.78rem;">' +
+              '<span class="kwik-ep-num">Ep ' + ep + '</span>' +
+              '</button>';
+          }
+          epGrid.innerHTML = gridHtml;
+        }
+        // Also render the download grid
         renderEpisodeDownloadGrid(movie.id, 1, Math.min(24, totalEps));
       }, 50);
     }
-    // Auto-search Anikoto for streaming
+
+    // Search Anikoto in background (non-blocking — doesn't hold up the player)
     setTimeout(function () {
       searchAnikotoForAnime(movie);
     }, 100);
@@ -760,6 +781,9 @@ function closeMovieModal() {
     animePlayer.innerHTML = '';
   }
   activeStreamSource = null;
+  activeAnimeSource = 'videasy';
+  currentAnimeMovieId = null;
+  activeAnimeAnilistId = null;
   anikotoState = { episodes: [], seriesId: null, currentEp: null, lang: 'sub' };
 }
 
@@ -782,11 +806,13 @@ function buildStreamUrl(source, movie, episode) {
   switch (source) {
     case 'videasy':
       if (isAnime) {
-        if (malId) return 'https://player.videasy.net/anime/' + malId + '/' + ep;
-        // Videasy TV format for anime (use TMDB ID or try as TV)
-        return 'https://player.videasy.net/tv/' + tmdbId + '/' + 1 + '/' + ep;
+        if (activeAnimeAnilistId) {
+          return 'https://player.videasy.net/anime/' + activeAnimeAnilistId + '/' + ep + '?color=8B5CF6&episodeSelector=true&nextEpisode=true&autoplayNextEpisode=true';
+        }
+        // Videasy TV format fallback (if MAL->AniList mapping failed)
+        return 'https://player.videasy.net/tv/' + tmdbId + '/1/' + ep + '?color=8B5CF6';
       }
-      return 'https://player.videasy.net/movie/' + tmdbId;
+      return 'https://player.videasy.net/movie/' + tmdbId + '?color=8B5CF6';
 
     case 'autoembed':
       if (isAnime) {
@@ -797,8 +823,7 @@ function buildStreamUrl(source, movie, episode) {
 
     case 'vidsrc':
       if (isAnime) {
-        // vidsrc doesn't reliably document malId anime routes, fallback to tv
-        return 'https://vidsrc.cc/v2/embed/tv/' + tmdbId + '/' + 1 + '/' + ep;
+        return 'https://vidsrc.cc/v2/embed/tv/' + tmdbId + '/1/' + ep;
       }
       return 'https://vidsrc.cc/v2/embed/movie/' + tmdbId;
 
@@ -809,7 +834,7 @@ function buildStreamUrl(source, movie, episode) {
       return 'https://multiembed.mov/?video_id=' + tmdbId + '&tmdb=1';
 
     default:
-      if (isAnime && malId) return 'https://player.videasy.net/anime/' + malId + '/' + ep;
+      if (isAnime && activeAnimeAnilistId) return 'https://player.videasy.net/anime/' + activeAnimeAnilistId + '/' + ep;
       return 'https://player.videasy.net/movie/' + tmdbId;
   }
 }
@@ -844,7 +869,7 @@ function switchStreamSource(source, movieId) {
   // Get episode number for anime
   let ep = 1;
   if (isAnime) {
-    const epSelect = document.getElementById('ep-select');
+    const epSelect = document.getElementById('anime-ep-select');
     if (epSelect) ep = parseInt(epSelect.value, 10) || 1;
   }
 
@@ -874,13 +899,18 @@ function switchStreamSource(source, movieId) {
 // ANIKOTO ANIME STREAMING ENGINE
 // ============================================================
 let anikotoState = { episodes: [], seriesId: null, currentEp: null, lang: 'sub' };
+let activeAnimeSource = 'videasy'; // Track the active anime source
+let currentAnimeMovieId = null; // Track which anime is open
+let activeAnimeAnilistId = null; // AniList ID for Videasy
 
 function buildAnimeStreamSection(movie) {
   const totalEps = parseInt(movie.episodes) || 24;
-  // Build a static episode number selector as fallback (always present)
-  let fallbackEpOptions = '';
+  currentAnimeMovieId = movie.id;
+
+  // Build episode dropdown options
+  let epOptions = '';
   for (let i = 1; i <= totalEps; i++) {
-    fallbackEpOptions += '<option value="' + i + '">Episode ' + i + '</option>';
+    epOptions += '<option value="' + i + '">Episode ' + i + '</option>';
   }
 
   return '<div class="stream-section anime-stream-section" style="margin-bottom:24px;">' +
@@ -888,15 +918,21 @@ function buildAnimeStreamSection(movie) {
     '<div class="kwik-logo-wrap">' +
     '<span class="kwik-logo" style="font-size:1.5rem;">▶️</span>' +
     '<div>' +
-    '<h3 class="modal-section-title" style="margin-bottom:2px;">Watch Now — Anikoto Stream</h3>' +
-    '<p style="font-size:0.78rem;color:var(--text-muted);margin:0;">Stream episodes directly from Anikoto — no redirects, plays right here.</p>' +
+    '<h3 class="modal-section-title" style="margin-bottom:2px;">Watch Now</h3>' +
+    '<p style="font-size:0.78rem;color:var(--text-muted);margin:0;">Select an episode and source to start streaming instantly.</p>' +
     '</div>' +
     '</div>' +
     '</div>' +
+    // Source selector buttons — always visible
+    '<div id="anime-source-buttons" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;">' +
+    '<button class="qbt-btn anime-src-btn active" data-source="videasy" style="flex:1;min-width:100px;padding:8px 12px;font-size:0.82rem;background:linear-gradient(135deg, #10b981, #059669);color:#fff;" onclick="switchAnimeSource(\'videasy\',' + movie.id + ')">▶ Videasy</button>' +
+    '<button class="qbt-btn anime-src-btn" data-source="anikoto" style="flex:1;min-width:100px;padding:8px 12px;font-size:0.82rem;background:var(--bg-card2);border:1px solid var(--border);color:var(--text-primary);" id="anikoto-src-btn" onclick="switchAnimeSource(\'anikoto\',' + movie.id + ')">▶ Anikoto</button>' +
+    '</div>' +
+    // Episode controls: dropdown + sub/dub
     '<div id="anime-stream-controls" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px;align-items:center;">' +
     '<div id="anime-ep-selector" style="flex:1;min-width:200px;">' +
-    '<select id="anime-ep-select" style="width:100%;padding:8px 12px;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--bg-card2);color:var(--text-primary);font-size:0.85rem;cursor:pointer;" onchange="onAnimeEpChange(this.value,' + movie.id + ')">' +
-    fallbackEpOptions +
+    '<select id="anime-ep-select" style="width:100%;padding:10px 14px;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--bg-card2);color:var(--text-primary);font-size:0.9rem;font-weight:600;cursor:pointer;" onchange="onAnimeEpChange(this.value,' + movie.id + ')">' +
+    epOptions +
     '</select>' +
     '</div>' +
     '<div style="display:flex;gap:6px;">' +
@@ -904,32 +940,141 @@ function buildAnimeStreamSection(movie) {
     '<button id="anime-lang-dub" class="qbt-btn anime-lang-btn" style="padding:6px 16px;font-size:0.82rem;background:var(--bg-card2);border:1px solid var(--border);color:var(--text-primary);" onclick="switchAnimeLang(\'dub\')">🇺🇸 DUB</button>' +
     '</div>' +
     '</div>' +
-    // Fallback stream source buttons for when Anikoto fails
-    '<div id="anime-fallback-sources" style="display:none;margin-bottom:12px;">' +
-    '<p style="font-size:0.78rem;color:var(--text-muted);margin-bottom:8px;">Anikoto not available — try an alternative source:</p>' +
-    '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
-    '<button class="qbt-btn anime-alt-src-btn" style="flex:1;min-width:100px;padding:8px 12px;font-size:0.82rem;background:linear-gradient(135deg, #10b981, #059669);" onclick="playAnimeViaFallback(\'videasy\',' + movie.id + ')">▶ Videasy</button>' +
-    '<button class="qbt-btn anime-alt-src-btn" style="flex:1;min-width:100px;padding:8px 12px;font-size:0.82rem;background:var(--bg-card2);border:1px solid var(--border);color:var(--text-primary);" onclick="playAnimeViaFallback(\'autoembed\',' + movie.id + ')">▶ AutoEmbed</button>' +
-    '<button class="qbt-btn anime-alt-src-btn" style="flex:1;min-width:100px;padding:8px 12px;font-size:0.82rem;background:var(--bg-card2);border:1px solid var(--border);color:var(--text-primary);" onclick="playAnimeViaFallback(\'vidsrc\',' + movie.id + ')">▶ VidSrc</button>' +
-    '<button class="qbt-btn anime-alt-src-btn" style="flex:1;min-width:100px;padding:8px 12px;font-size:0.82rem;background:var(--bg-card2);border:1px solid var(--border);color:var(--text-primary);" onclick="playAnimeViaFallback(\'embed\',' + movie.id + ')">▶ MultiEmbed</button>' +
-    '</div>' +
-    '</div>' +
+    // Player container
     '<div id="anime-player-container" style="width:100%;aspect-ratio:16/9;background:#000;border-radius:var(--radius-md);overflow:hidden;border:1px solid var(--border);position:relative;box-shadow:0 10px 30px rgba(0,0,0,0.5);">' +
     '<div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--text-muted);">' +
-    '<div class="loading-spinner" style="width:40px;height:40px;margin-bottom:12px;"></div>' +
-    '<span id="anime-player-status" style="font-weight:600;font-size:0.9rem;">Searching Anikoto for this anime...</span>' +
+    '<span style="font-size:3rem;margin-bottom:10px;">🎬</span>' +
+    '<span id="anime-player-status" style="font-weight:600;font-size:0.9rem;">Select an episode to start watching</span>' +
     '</div>' +
     '</div>' +
+    // Episode number grid for quick selection
     '<div id="anime-ep-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(60px,1fr));gap:6px;margin-top:12px;max-height:200px;overflow-y:auto;"></div>' +
     '</div>';
 }
 
-async function searchAnikotoForAnime(movie) {
-  const statusEl = document.getElementById('anime-player-status');
-  const epSelector = document.getElementById('anime-ep-selector');
-  const epGrid = document.getElementById('anime-ep-grid');
+// Switch source for anime streaming
+function switchAnimeSource(source, movieId) {
+  activeAnimeSource = source;
+  currentAnimeMovieId = movieId;
 
-  if (!statusEl) return;
+  // Update button active states
+  document.querySelectorAll('.anime-src-btn').forEach(btn => {
+    const isCurrent = btn.getAttribute('data-source') === source;
+    btn.classList.toggle('active', isCurrent);
+    if (isCurrent) {
+      btn.style.background = 'linear-gradient(135deg, #10b981, #059669)';
+      btn.style.color = '#fff';
+      btn.style.borderColor = 'transparent';
+    } else {
+      btn.style.background = 'var(--bg-card2)';
+      btn.style.color = 'var(--text-primary)';
+      btn.style.borderColor = 'var(--border)';
+    }
+  });
+
+  // If switching to Anikoto and we have Anikoto episodes loaded, use those
+  if (source === 'anikoto' && anikotoState.episodes.length > 0) {
+    const epSelect = document.getElementById('anime-ep-select');
+    const epNum = epSelect ? parseInt(epSelect.value, 10) || 1 : 1;
+    // Find the matching Anikoto episode
+    const anikotoEp = anikotoState.episodes.find(e => parseInt(e.number) === epNum);
+    if (anikotoEp) {
+      playAnikotoEpisode(anikotoEp.episode_embed_id);
+      return;
+    }
+  }
+
+  // For non-Anikoto sources (or if Anikoto not loaded), play via fallback
+  if (source !== 'anikoto') {
+    playAnimeEpisodeNow(movieId);
+  } else {
+    // Anikoto not loaded, show message
+    const container = document.getElementById('anime-player-container');
+    if (container) {
+      if (anikotoState.episodes.length === 0) {
+        container.innerHTML =
+          '<div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--text-muted);">' +
+          '<div class="loading-spinner" style="width:40px;height:40px;margin-bottom:12px;"></div>' +
+          '<span style="font-weight:600;font-size:0.9rem;">Loading Anikoto episodes...</span>' +
+          '<span style="font-size:0.78rem;opacity:0.6;margin-top:4px;">If this takes long, try another source</span>' +
+          '</div>';
+      }
+    }
+  }
+}
+
+// Play the currently selected episode via the active source
+async function playAnimeEpisodeNow(movieId) {
+  const movie = appState.movies.find(m => m.id == movieId);
+  if (!movie) return;
+
+  const source = activeAnimeSource || 'videasy';
+  const epSelect = document.getElementById('anime-ep-select');
+  const ep = epSelect ? parseInt(epSelect.value, 10) || 1 : 1;
+
+  // If source is anikoto and we have episodes, delegate to Anikoto player
+  if (source === 'anikoto' && anikotoState.episodes.length > 0) {
+    const anikotoEp = anikotoState.episodes.find(e => parseInt(e.number) === ep);
+    if (anikotoEp) {
+      playAnikotoEpisode(anikotoEp.episode_embed_id);
+      return;
+    }
+  }
+
+  // Resolve MAL ID to AniList ID for Videasy (if not already cached)
+  if (source === 'videasy' && !activeAnimeAnilistId && movie.anime_link) {
+    const malMatch = movie.anime_link.match(/anime\/(\d+)/);
+    if (malMatch) {
+      try {
+        const res = await fetch('/api/anilist/mal/' + malMatch[1]);
+        const data = await res.json();
+        if (data.ok && data.anilist_id) {
+          activeAnimeAnilistId = data.anilist_id;
+        }
+      } catch (e) {
+        console.error('Failed to resolve AniList ID', e);
+      }
+    }
+  }
+
+  // Use generic stream URL for other sources
+  const streamUrl = buildStreamUrl(source, movie, ep);
+  const container = document.getElementById('anime-player-container');
+  if (!container) return;
+
+  container.innerHTML =
+    '<div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--text-muted);z-index:1;">' +
+    '<div class="loading-spinner" style="width:40px;height:40px;margin-bottom:10px;"></div>' +
+    '<span style="font-size:0.9rem;font-weight:600;">Loading Episode ' + ep + ' via ' + source + '...</span>' +
+    '</div>' +
+    '<iframe src="' + streamUrl + '" ' +
+    'style="position:absolute;inset:0;width:100%;height:100%;border:none;z-index:2;" ' +
+    'allowfullscreen allow="autoplay; encrypted-media; picture-in-picture; fullscreen" ' +
+    'referrerpolicy="no-referrer" ' +
+    'loading="lazy">' +
+    '</iframe>';
+
+  // Update episode grid active state
+  updateEpGridActive(ep);
+
+  showToast('▶ Playing ' + movie.title + ' — Episode ' + ep + ' via ' + source);
+  setTimeout(() => container.scrollIntoView({ behavior: 'smooth', block: 'center' }), 200);
+}
+
+// Update the episode grid button highlighting
+function updateEpGridActive(epNum) {
+  document.querySelectorAll('.anime-ep-grid-btn').forEach(btn => {
+    const btnEp = parseInt(btn.dataset.ep);
+    const isActive = btnEp === epNum;
+    btn.classList.toggle('active', isActive);
+    btn.style.background = isActive ? 'linear-gradient(135deg, #8b5cf6, #6d28d9)' : '';
+    btn.style.color = isActive ? '#fff' : '';
+  });
+}
+
+// Anikoto background search (non-blocking)
+async function searchAnikotoForAnime(movie) {
+  const anikotoBtn = document.getElementById('anikoto-src-btn');
 
   // Extract MAL ID from anime_link if available
   let malId = '';
@@ -939,34 +1084,40 @@ async function searchAnikotoForAnime(movie) {
   }
 
   try {
-    // Search via our backend proxy
     const searchUrl = '/api/anikoto/search-title?q=' + encodeURIComponent(movie.title) + (malId ? '&mal_id=' + malId : '');
     const res = await fetch(searchUrl);
     const data = await res.json();
 
     if (!data.ok || !data.match) {
-      statusEl.innerHTML = '😔 Not found on Anikoto<br><span style="font-size:0.78rem;opacity:0.7;">Try the download section below instead.</span>';
-      // Show fallback source buttons so the user can still stream via alternative providers
-      const fallbackEl = document.getElementById('anime-fallback-sources');
-      if (fallbackEl) fallbackEl.style.display = 'block';
+      if (anikotoBtn) {
+        anikotoBtn.style.opacity = '0.4';
+        anikotoBtn.title = 'Not found on Anikoto';
+      }
       return;
     }
 
     const anikotoAnime = data.match;
     anikotoState.seriesId = anikotoAnime.id;
 
-    // Now fetch full episode list
-    statusEl.textContent = 'Loading episodes...';
     const seriesRes = await fetch('/api/anikoto/series/' + anikotoAnime.id);
     const seriesData = await seriesRes.json();
 
     if (!seriesData.ok || !seriesData.data || !seriesData.data.episodes || !seriesData.data.episodes.length) {
-      statusEl.innerHTML = '😔 No episodes found<br><span style="font-size:0.78rem;opacity:0.7;">Episodes may not be available yet.</span>';
+      if (anikotoBtn) {
+        anikotoBtn.style.opacity = '0.4';
+        anikotoBtn.title = 'No episodes on Anikoto';
+      }
       return;
     }
 
     const episodes = seriesData.data.episodes;
     anikotoState.episodes = episodes;
+
+    // Anikoto loaded! Update the button to show it's available
+    if (anikotoBtn) {
+      anikotoBtn.innerHTML = '▶ Anikoto ✓';
+      anikotoBtn.title = episodes.length + ' episodes available on Anikoto';
+    }
 
     // Check if dub is available
     const hasDub = episodes.some(ep => ep.embed_url && ep.embed_url.dub);
@@ -977,41 +1128,12 @@ async function searchAnikotoForAnime(movie) {
       dubBtn.title = 'Dub not available';
     }
 
-    // Build episode selector dropdown
-    if (epSelector) {
-      let selectHtml = '<select id="anime-ep-select" style="width:100%;padding:8px 12px;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--bg-card2);color:var(--text-primary);font-size:0.85rem;cursor:pointer;" onchange="playAnikotoEpisode(this.value)">';
-      episodes.forEach(ep => {
-        const epTitle = ep.title ? ' — ' + (ep.title.length > 40 ? ep.title.substring(0, 40) + '...' : ep.title) : '';
-        selectHtml += '<option value="' + ep.episode_embed_id + '">Episode ' + ep.number + epTitle + '</option>';
-      });
-      selectHtml += '</select>';
-      epSelector.innerHTML = selectHtml;
-    }
-
-    // Build quick episode number grid
-    if (epGrid && episodes.length > 1) {
-      let gridHtml = '';
-      episodes.forEach(ep => {
-        gridHtml += '<button class="kwik-ep-btn anime-ep-grid-btn" data-epid="' + ep.episode_embed_id + '" onclick="playAnikotoEpisode(\'' + ep.episode_embed_id + '\')" style="padding:6px 4px;font-size:0.78rem;">' +
-          '<span class="kwik-ep-num">Ep ' + ep.number + '</span>' +
-          '</button>';
-      });
-      epGrid.innerHTML = gridHtml;
-    }
-
-    // Auto-play episode 1
-    if (episodes.length > 0) {
-      playAnikotoEpisode(episodes[0].episode_embed_id);
-    }
-
   } catch (err) {
     console.error('Anikoto search error:', err);
-    if (statusEl) {
-      statusEl.innerHTML = '⚠️ Error connecting to Anikoto<br><span style="font-size:0.78rem;opacity:0.7;">Make sure the server is running.</span>';
+    if (anikotoBtn) {
+      anikotoBtn.style.opacity = '0.4';
+      anikotoBtn.title = 'Anikoto unavailable';
     }
-    // Show fallback source buttons on error too
-    const fallbackEl = document.getElementById('anime-fallback-sources');
-    if (fallbackEl) fallbackEl.style.display = 'block';
   }
 }
 
@@ -1024,7 +1146,7 @@ function playAnikotoEpisode(embedId) {
   const embedUrl = ep.embed_url && ep.embed_url[lang] ? ep.embed_url[lang] : (ep.embed_url && ep.embed_url.sub ? ep.embed_url.sub : null);
 
   if (!embedUrl) {
-    showToast('❌ No ' + lang.toUpperCase() + ' stream available for Episode ' + ep.number);
+    showToast('❌ No ' + lang.toUpperCase() + ' stream available for Episode ' + ep.number + '. Try another source.');
     return;
   }
 
@@ -1043,21 +1165,14 @@ function playAnikotoEpisode(embedId) {
     'loading="lazy">' +
     '</iframe>';
 
-  // Update dropdown selection
+  // Update dropdown to match
   const select = document.getElementById('anime-ep-select');
-  if (select) select.value = embedId;
+  if (select) select.value = String(ep.number);
 
   // Update grid button active state
-  document.querySelectorAll('.anime-ep-grid-btn').forEach(btn => {
-    const isActive = btn.dataset.epid === String(embedId);
-    btn.classList.toggle('active', isActive);
-    btn.style.background = isActive ? 'linear-gradient(135deg, #8b5cf6, #6d28d9)' : '';
-    btn.style.color = isActive ? '#fff' : '';
-  });
+  updateEpGridActive(parseInt(ep.number));
 
   showToast('▶ Playing Episode ' + ep.number + (ep.title ? ' — ' + ep.title.substring(0, 30) : '') + ' (' + lang.toUpperCase() + ')');
-
-  // Scroll player into view
   setTimeout(() => container.scrollIntoView({ behavior: 'smooth', block: 'center' }), 200);
 }
 
@@ -1080,57 +1195,62 @@ function switchAnimeLang(lang) {
     dubBtn.style.borderColor = lang === 'dub' ? 'transparent' : 'var(--border)';
   }
 
-  // Re-play current episode with new language
-  if (anikotoState.currentEp) {
+  // Re-play current episode with new language if Anikoto is active
+  if (activeAnimeSource === 'anikoto' && anikotoState.currentEp) {
     playAnikotoEpisode(anikotoState.currentEp.episode_embed_id);
+  } else if (currentAnimeMovieId) {
+    playAnimeEpisodeNow(currentAnimeMovieId);
   }
 }
 
-// Handler when fallback episode selector changes
+// Handler when episode dropdown changes — immediately plays the episode
 function onAnimeEpChange(value, movieId) {
-  // If Anikoto episodes are loaded, use them
-  if (anikotoState.episodes.length > 0) {
-    playAnikotoEpisode(value);
+  currentAnimeMovieId = movieId;
+  const epNum = parseInt(value, 10) || 1;
+
+  // Update the grid active state
+  updateEpGridActive(epNum);
+
+  // If using Anikoto, find the matching episode
+  if (activeAnimeSource === 'anikoto' && anikotoState.episodes.length > 0) {
+    const anikotoEp = anikotoState.episodes.find(e => parseInt(e.number) === epNum);
+    if (anikotoEp) {
+      playAnikotoEpisode(anikotoEp.episode_embed_id);
+      return;
+    }
   }
-  // Otherwise do nothing until user clicks a source button
+
+  // Play via the active source
+  playAnimeEpisodeNow(movieId);
 }
 
-// Play anime episode via fallback streaming sources (Videasy, AutoEmbed, etc.)
+// When clicking an episode in the grid
+function playEpFromGrid(epNum, movieId) {
+  currentAnimeMovieId = movieId;
+
+  // Update the dropdown to match
+  const select = document.getElementById('anime-ep-select');
+  if (select) select.value = String(epNum);
+
+  // Update grid active state
+  updateEpGridActive(epNum);
+
+  // If using Anikoto
+  if (activeAnimeSource === 'anikoto' && anikotoState.episodes.length > 0) {
+    const anikotoEp = anikotoState.episodes.find(e => parseInt(e.number) === epNum);
+    if (anikotoEp) {
+      playAnikotoEpisode(anikotoEp.episode_embed_id);
+      return;
+    }
+  }
+
+  // Play via active source
+  playAnimeEpisodeNow(movieId);
+}
+
+// Legacy function kept for compatibility
 function playAnimeViaFallback(source, movieId) {
-  const movie = appState.movies.find(m => m.id == movieId);
-  if (!movie) return;
-
-  const epSelect = document.getElementById('anime-ep-select');
-  const ep = epSelect ? parseInt(epSelect.value, 10) || 1 : 1;
-
-  const streamUrl = buildStreamUrl(source, movie, ep);
-  const container = document.getElementById('anime-player-container');
-  if (!container) return;
-
-  // Update active button styles
-  document.querySelectorAll('.anime-alt-src-btn').forEach(btn => {
-    btn.style.background = 'var(--bg-card2)';
-    btn.style.color = 'var(--text-primary)';
-    btn.style.borderColor = 'var(--border)';
-  });
-  event.target.style.background = 'linear-gradient(135deg, #10b981, #059669)';
-  event.target.style.color = '#fff';
-  event.target.style.borderColor = 'transparent';
-
-  container.innerHTML =
-    '<div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--text-muted);z-index:1;">' +
-    '<div class="loading-spinner" style="width:40px;height:40px;margin-bottom:10px;"></div>' +
-    '<span style="font-size:0.9rem;font-weight:600;">Loading Episode ' + ep + ' via ' + source + '...</span>' +
-    '</div>' +
-    '<iframe src="' + streamUrl + '" ' +
-    'style="position:absolute;inset:0;width:100%;height:100%;border:none;z-index:2;" ' +
-    'allowfullscreen allow="autoplay; encrypted-media; picture-in-picture; fullscreen" ' +
-    'referrerpolicy="no-referrer" ' +
-    'loading="lazy">' +
-    '</iframe>';
-
-  showToast('▶ Loading ' + movie.title + ' Ep ' + ep + ' via ' + source + '...');
-  setTimeout(() => container.scrollIntoView({ behavior: 'smooth', block: 'center' }), 200);
+  switchAnimeSource(source, movieId);
 }
 
 // ============================================================
