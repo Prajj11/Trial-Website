@@ -690,23 +690,23 @@ function openMovieModal(id) {
     (!isAnime ? '<div class="meta-item"><span class="meta-label">Budget</span><span class="meta-value">' + bStr + '</span></div>' +
       '<div class="meta-item"><span class="meta-label">Revenue</span><span class="meta-value">' + rStr + '</span></div>' : '') +
     '</div>' +
-    (!isAnime ? 
-    '<div class="stream-section" style="margin-bottom:24px;">' +
-    '<h3 class="modal-section-title">▶️ Watch Now</h3>' +
-    '<p style="font-size:0.82rem;color:var(--text-muted);margin-bottom:10px;">Stream instantly in your browser — pick a source below.</p>' +
-    '<div class="stream-controls" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px;">' +
-    '<button class="qbt-btn stream-source-btn active" data-source="videasy" style="flex:1;background:linear-gradient(135deg, #10b981, #059669);" onclick="switchStreamSource(\'videasy\',' + movie.id + ')">▶ Videasy</button>' +
-    '<button class="qbt-btn stream-source-btn" data-source="autoembed" style="flex:1;background:var(--bg-card2);border:1px solid var(--border);color:var(--text-primary);" onclick="switchStreamSource(\'autoembed\',' + movie.id + ')">▶ AutoEmbed</button>' +
-    '<button class="qbt-btn stream-source-btn" data-source="vidsrc" style="flex:1;background:var(--bg-card2);border:1px solid var(--border);color:var(--text-primary);" onclick="switchStreamSource(\'vidsrc\',' + movie.id + ')">▶ VidSrc</button>' +
-    '<button class="qbt-btn stream-source-btn" data-source="embed" style="flex:1;background:var(--bg-card2);border:1px solid var(--border);color:var(--text-primary);" onclick="switchStreamSource(\'embed\',' + movie.id + ')">▶ MultiEmbed</button>' +
-    '</div>' +
-    '<div id="player-container" style="width:100%;aspect-ratio:16/9;background:#000;border-radius:var(--radius-md);overflow:hidden;border:1px solid var(--border);position:relative;box-shadow:0 10px 30px rgba(0,0,0,0.5);">' +
-    '<div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--text-muted);">' +
-    '<span style="font-size:3rem;margin-bottom:10px;">🎬</span>' +
-    '<span style="font-weight:600;font-size:0.9rem;">Click a source above to start streaming</span>' +
-    '</div>' +
-    '</div>' +
-    '</div>' : '') +
+    (!isAnime ?
+      '<div class="stream-section" style="margin-bottom:24px;">' +
+      '<h3 class="modal-section-title">▶️ Watch Now</h3>' +
+      '<p style="font-size:0.82rem;color:var(--text-muted);margin-bottom:10px;">Stream instantly in your browser — pick a source below.</p>' +
+      '<div class="stream-controls" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px;">' +
+      '<button class="qbt-btn stream-source-btn active" data-source="videasy" style="flex:1;background:linear-gradient(135deg, #10b981, #059669);" onclick="switchStreamSource(\'videasy\',' + movie.id + ')">▶ Videasy</button>' +
+      '<button class="qbt-btn stream-source-btn" data-source="autoembed" style="flex:1;background:var(--bg-card2);border:1px solid var(--border);color:var(--text-primary);" onclick="switchStreamSource(\'autoembed\',' + movie.id + ')">▶ AutoEmbed</button>' +
+      '<button class="qbt-btn stream-source-btn" data-source="vidsrc" style="flex:1;background:var(--bg-card2);border:1px solid var(--border);color:var(--text-primary);" onclick="switchStreamSource(\'vidsrc\',' + movie.id + ')">▶ VidSrc</button>' +
+      '<button class="qbt-btn stream-source-btn" data-source="embed" style="flex:1;background:var(--bg-card2);border:1px solid var(--border);color:var(--text-primary);" onclick="switchStreamSource(\'embed\',' + movie.id + ')">▶ MultiEmbed</button>' +
+      '</div>' +
+      '<div id="player-container" style="width:100%;aspect-ratio:16/9;background:#000;border-radius:var(--radius-md);overflow:hidden;border:1px solid var(--border);position:relative;box-shadow:0 10px 30px rgba(0,0,0,0.5);">' +
+      '<div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--text-muted);">' +
+      '<span style="font-size:3rem;margin-bottom:10px;">🎬</span>' +
+      '<span style="font-weight:600;font-size:0.9rem;">Click a source above to start streaming</span>' +
+      '</div>' +
+      '</div>' +
+      '</div>' : '') +
     (isAnime ? buildAnimeStreamSection(movie) : '') +
     (isAnime ? buildKwikDownloadSection(movie) : '') +
     '<div class="qbt-section">' +
@@ -754,6 +754,10 @@ function openMovieModal(id) {
         renderEpisodeDownloadGrid(movie.id, 1, Math.min(24, totalEps));
       }, 50);
     }
+
+    // Pre-fetch AniList ID for Videasy (critical for anime playback)
+    // Then auto-play episode 1 once the ID is resolved
+    resolveAnilistAndAutoplay(movie);
 
     // Search Anikoto in background (non-blocking — doesn't hold up the player)
     setTimeout(function () {
@@ -806,11 +810,16 @@ function buildStreamUrl(source, movie, episode) {
   switch (source) {
     case 'videasy':
       if (isAnime) {
+        // Best option: use AniList ID (pre-resolved on modal open)
         if (activeAnimeAnilistId) {
           return 'https://player.videasy.net/anime/' + activeAnimeAnilistId + '/' + ep + '?color=8B5CF6&episodeSelector=true&nextEpisode=true&autoplayNextEpisode=true';
         }
-        // Videasy TV format fallback (if MAL->AniList mapping failed)
-        return 'https://player.videasy.net/tv/' + tmdbId + '/1/' + ep + '?color=8B5CF6';
+        // Fallback: use MAL ID with autoembed instead of broken TV format
+        if (malId) {
+          return 'https://autoembed.to/anime/mal/' + malId + '/' + ep;
+        }
+        // Last resort: try title-based search on vidsrc
+        return 'https://vidsrc.cc/v2/embed/tv/' + tmdbId + '/1/' + ep;
       }
       return 'https://player.videasy.net/movie/' + tmdbId + '?color=8B5CF6';
 
@@ -823,6 +832,7 @@ function buildStreamUrl(source, movie, episode) {
 
     case 'vidsrc':
       if (isAnime) {
+        if (malId) return 'https://vidsrc.cc/v2/embed/anime/mal/' + malId + '/' + ep;
         return 'https://vidsrc.cc/v2/embed/tv/' + tmdbId + '/1/' + ep;
       }
       return 'https://vidsrc.cc/v2/embed/movie/' + tmdbId;
@@ -834,7 +844,8 @@ function buildStreamUrl(source, movie, episode) {
       return 'https://multiembed.mov/?video_id=' + tmdbId + '&tmdb=1';
 
     default:
-      if (isAnime && activeAnimeAnilistId) return 'https://player.videasy.net/anime/' + activeAnimeAnilistId + '/' + ep;
+      if (isAnime && activeAnimeAnilistId) return 'https://player.videasy.net/anime/' + activeAnimeAnilistId + '/' + ep + '?color=8B5CF6&episodeSelector=true&nextEpisode=true&autoplayNextEpisode=true';
+      if (isAnime && malId) return 'https://autoembed.to/anime/mal/' + malId + '/' + ep;
       return 'https://player.videasy.net/movie/' + tmdbId;
   }
 }
@@ -923,10 +934,10 @@ function buildAnimeStreamSection(movie) {
     '</div>' +
     '</div>' +
     '</div>' +
-    // Source selector buttons — always visible
+    // Source selector buttons — only reliable sources available
     '<div id="anime-source-buttons" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;">' +
-    '<button class="qbt-btn anime-src-btn active" data-source="videasy" style="flex:1;min-width:100px;padding:8px 12px;font-size:0.82rem;background:linear-gradient(135deg, #10b981, #059669);color:#fff;" onclick="switchAnimeSource(\'videasy\',' + movie.id + ')">▶ Videasy</button>' +
-    '<button class="qbt-btn anime-src-btn" data-source="anikoto" style="flex:1;min-width:100px;padding:8px 12px;font-size:0.82rem;background:var(--bg-card2);border:1px solid var(--border);color:var(--text-primary);" id="anikoto-src-btn" onclick="switchAnimeSource(\'anikoto\',' + movie.id + ')">▶ Anikoto</button>' +
+    '<button class="qbt-btn anime-src-btn active" data-source="videasy" style="flex:1;min-width:80px;padding:8px 12px;font-size:0.82rem;background:linear-gradient(135deg, #10b981, #059669);color:#fff;" onclick="switchAnimeSource(\'videasy\',' + movie.id + ')">▶ Videasy</button>' +
+    '<button class="qbt-btn anime-src-btn" data-source="anikoto" style="flex:1;min-width:80px;padding:8px 12px;font-size:0.82rem;background:var(--bg-card2);border:1px solid var(--border);color:var(--text-primary);" id="anikoto-src-btn" onclick="switchAnimeSource(\'anikoto\',' + movie.id + ')">▶ Anikoto</button>' +
     '</div>' +
     // Episode controls: dropdown + sub/dub
     '<div id="anime-stream-controls" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px;align-items:center;">' +
@@ -940,16 +951,50 @@ function buildAnimeStreamSection(movie) {
     '<button id="anime-lang-dub" class="qbt-btn anime-lang-btn" style="padding:6px 16px;font-size:0.82rem;background:var(--bg-card2);border:1px solid var(--border);color:var(--text-primary);" onclick="switchAnimeLang(\'dub\')">🇺🇸 DUB</button>' +
     '</div>' +
     '</div>' +
-    // Player container
+    // Player container with loading state
     '<div id="anime-player-container" style="width:100%;aspect-ratio:16/9;background:#000;border-radius:var(--radius-md);overflow:hidden;border:1px solid var(--border);position:relative;box-shadow:0 10px 30px rgba(0,0,0,0.5);">' +
     '<div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--text-muted);">' +
-    '<span style="font-size:3rem;margin-bottom:10px;">🎬</span>' +
-    '<span id="anime-player-status" style="font-weight:600;font-size:0.9rem;">Select an episode to start watching</span>' +
+    '<div class="loading-spinner" style="width:40px;height:40px;margin-bottom:12px;"></div>' +
+    '<span id="anime-player-status" style="font-weight:600;font-size:0.9rem;">Preparing player... Episode 1 will auto-play</span>' +
     '</div>' +
     '</div>' +
     // Episode number grid for quick selection
     '<div id="anime-ep-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(60px,1fr));gap:6px;margin-top:12px;max-height:200px;overflow-y:auto;"></div>' +
     '</div>';
+}
+
+// Resolve AniList ID and auto-play episode 1 when modal opens
+async function resolveAnilistAndAutoplay(movie) {
+  const statusEl = document.getElementById('anime-player-status');
+
+  // Extract MAL ID from anime_link
+  let malId = null;
+  if (movie.anime_link) {
+    const malMatch = movie.anime_link.match(/anime\/(\d+)/);
+    if (malMatch) malId = malMatch[1];
+  }
+
+  // Try to resolve AniList ID for Videasy
+  if (malId) {
+    try {
+      if (statusEl) statusEl.textContent = 'Resolving anime ID...';
+      const res = await fetch('/api/anilist/mal/' + malId);
+      const data = await res.json();
+      if (data.ok && data.anilist_id) {
+        activeAnimeAnilistId = data.anilist_id;
+        console.log('[Anime] Resolved AniList ID:', activeAnimeAnilistId, 'for MAL:', malId);
+      } else {
+        console.warn('[Anime] Could not resolve AniList ID for MAL:', malId);
+      }
+    } catch (e) {
+      console.error('[Anime] AniList resolution failed:', e);
+    }
+  }
+
+  // Auto-play episode 1 if modal is still open for this movie
+  if (currentAnimeMovieId === movie.id) {
+    playAnimeEpisodeNow(movie.id);
+  }
 }
 
 // Switch source for anime streaming
@@ -1021,31 +1066,22 @@ async function playAnimeEpisodeNow(movieId) {
     }
   }
 
-  // Resolve MAL ID to AniList ID for Videasy (if not already cached)
-  if (source === 'videasy' && !activeAnimeAnilistId && movie.anime_link) {
-    const malMatch = movie.anime_link.match(/anime\/(\d+)/);
-    if (malMatch) {
-      try {
-        const res = await fetch('/api/anilist/mal/' + malMatch[1]);
-        const data = await res.json();
-        if (data.ok && data.anilist_id) {
-          activeAnimeAnilistId = data.anilist_id;
-        }
-      } catch (e) {
-        console.error('Failed to resolve AniList ID', e);
-      }
-    }
-  }
-
-  // Use generic stream URL for other sources
+  // Build stream URL using the already-resolved AniList ID (pre-fetched on modal open)
   const streamUrl = buildStreamUrl(source, movie, ep);
   const container = document.getElementById('anime-player-container');
   if (!container) return;
 
+  // Determine display source name
+  let displaySource = source;
+  if (source === 'videasy' && !activeAnimeAnilistId) {
+    // AniList ID unavailable, so buildStreamUrl used a fallback source
+    displaySource = movie.anime_link ? 'autoembed' : 'vidsrc';
+  }
+
   container.innerHTML =
     '<div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--text-muted);z-index:1;">' +
     '<div class="loading-spinner" style="width:40px;height:40px;margin-bottom:10px;"></div>' +
-    '<span style="font-size:0.9rem;font-weight:600;">Loading Episode ' + ep + ' via ' + source + '...</span>' +
+    '<span style="font-size:0.9rem;font-weight:600;">Loading Episode ' + ep + ' via ' + displaySource + '...</span>' +
     '</div>' +
     '<iframe src="' + streamUrl + '" ' +
     'style="position:absolute;inset:0;width:100%;height:100%;border:none;z-index:2;" ' +
@@ -1057,7 +1093,7 @@ async function playAnimeEpisodeNow(movieId) {
   // Update episode grid active state
   updateEpGridActive(ep);
 
-  showToast('▶ Playing ' + movie.title + ' — Episode ' + ep + ' via ' + source);
+  showToast('▶ Playing ' + movie.title + ' — Episode ' + ep + ' via ' + displaySource);
   setTimeout(() => container.scrollIntoView({ behavior: 'smooth', block: 'center' }), 200);
 }
 
