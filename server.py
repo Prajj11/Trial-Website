@@ -545,6 +545,195 @@ def get_anilist_id(mal_id):
 
 
 # ============================================================
+# DIRECT STREAM PROXY (HLS.js compatible)
+# ============================================================
+# Fetches direct .m3u8 / .mp4 video URLs from Consumet API
+# so the client can play them with HLS.js instead of using
+# embed iframes that buffer infinitely.
+
+_stream_cache = {}
+_STREAM_CACHE_TTL = 300  # 5 minutes
+
+_CONSUMET_BASES = [
+    'https://api.consumet.org',
+    'https://consumet-api.vercel.app',
+]
+
+
+def _try_consumet(path, params=None):
+    """Try multiple Consumet API mirrors."""
+    for base in _CONSUMET_BASES:
+        try:
+            resp = requests.get(
+                f'{base}{path}',
+                params=params,
+                timeout=12,
+                headers={'Accept': 'application/json'}
+            )
+            if resp.status_code == 200:
+                return resp.json()
+        except Exception:
+            continue
+    return None
+
+
+@app.route('/api/stream/<int:anilist_id>/<int:episode>', methods=['GET'])
+def get_stream(anilist_id, episode):
+    """
+    Get a direct .m3u8 or .mp4 streaming URL for an anime episode.
+    Uses Consumet (AniList provider) to resolve the video source.
+    Returns: { ok, sources: [{ url, quality, isM3U8 }], referer }
+    """
+    cache_key = f'stream:{anilist_id}:{episode}'
+    now = time.time()
+    if cache_key in _stream_cache:
+        data, ts = _stream_cache[cache_key]
+        if now - ts < _STREAM_CACHE_TTL:
+            return jsonify(data)
+
+    # Strategy 1: Consumet AniList provider — gogoanime source
+    info = _try_consumet(f'/meta/anilist/watch/{anilist_id}', {
+        'episodeId': f'{anilist_id}-episode-{episode}',
+        'provider': 'gogoanime'
+    })
+
+    # Strategy 2: Consumet gogoanime provider with episode ID patterns
+    if not info or not info.get('sources'):
+        info = _try_consumet(f'/meta/anilist/info/{anilist_id}')
+        if info and info.get('episodes'):
+            # Find the matching episode
+            ep_data = None
+            for ep in info['episodes']:
+                ep_num = ep.get('number')
+                if ep_num and int(ep_num) == episode:
+                    ep_data = ep
+                    break
+            if ep_data and ep_data.get('id'):
+                ep_id = ep_data['id']
+                info = _try_consumet(f'/meta/anilist/watch/{ep_id}')
+
+    # Strategy 3: Direct gogoanime provider
+    if not info or not info.get('sources'):
+        info = _try_consumet(f'/anime/gogoanime/info/{anilist_id}')
+        if info and info.get('episodes'):
+            for ep in info['episodes']:
+                if ep.get('number') and int(ep['number']) == episode:
+                    ep_id = ep.get('id', '')
+                    watch_data = _try_consumet(f'/anime/gogoanime/watch/{ep_id}')
+                    if watch_data and watch_data.get('sources'):
+                        info = watch_data
+                    break
+
+    if not info or not info.get('sources'):
+        return jsonify({
+            'ok': False,
+            'error': 'No streaming sources found',
+            'anilist_id': anilist_id,
+            'episode': episode
+        })
+
+    # Parse sources — prefer m3u8, then mp4
+    sources = []
+    for src in info.get('sources', []):
+        url = src.get('url', '')
+        quality = src.get('quality', 'default')
+        is_m3u8 = '.m3u8' in url or src.get('isM3U8', False)
+        if url:
+            sources.append({
+                'url': url,
+                'quality': quality,
+                'isM3U8': is_m3u8
+            })
+
+    # Sort: m3u8 first, then by quality (1080p > 720p > 480p > default)
+    quality_order = {'1080p': 0, '720p': 1, '480p': 2, '360p': 3, 'default': 4, 'auto': -1, 'backup': 5}
+    sources.sort(key=lambda s: (
+        0 if s['isM3U8'] else 1,
+        quality_order.get(s['quality'], 3)
+    ))
+
+    referer = info.get('headers', {}).get('Referer', '')
+
+    result = {
+        'ok': True,
+        'sources': sources,
+        'referer': referer,
+        'anilist_id': anilist_id,
+        'episode': episode
+    }
+    _stream_cache[cache_key] = (result, now)
+    return jsonify(result)
+
+
+@app.route('/api/anikoto/search-fast', methods=['GET'])
+def anikoto_search_fast():
+    """
+    Fast Anikoto search — uses the Anikoto search endpoint directly
+    instead of scanning pages sequentially.
+    Falls back to the slow page-scan method if needed.
+    Query params:
+      - q: anime title
+      - mal_id: optional MAL ID
+    """
+    q = request.args.get('q', '').strip()
+    mal_id = request.args.get('mal_id', '').strip()
+
+    if not q and not mal_id:
+        return jsonify({'ok': False, 'error': 'Missing query'}), 400
+
+    # Try direct search endpoint first
+    try:
+        search_data = _anikoto_get('/search', {'query': q})
+        if search_data and search_data.get('ok') and search_data.get('data'):
+            results = search_data['data']
+            # If we have a MAL ID, prefer exact match
+            if mal_id:
+                for anime in results:
+                    if str(anime.get('mal_id')) == str(mal_id):
+                        return jsonify({'ok': True, 'match': anime})
+            # Otherwise return best match
+            q_lower = q.lower().strip()
+            for anime in results:
+                a_title = (anime.get('title') or '').lower().strip()
+                if a_title == q_lower:
+                    return jsonify({'ok': True, 'match': anime})
+            # Partial match
+            for anime in results:
+                a_title = (anime.get('title') or '').lower().strip()
+                a_alt = (anime.get('alternative') or '').lower().strip()
+                if q_lower in a_title or q_lower in a_alt:
+                    return jsonify({'ok': True, 'match': anime})
+            # Return first result as fallback
+            if results:
+                return jsonify({'ok': True, 'match': results[0]})
+    except Exception as e:
+        print(f'[Anikoto Fast] Direct search failed: {e}')
+
+    # Fallback: limited page scan (max 5 pages instead of 30)
+    best_match = None
+    q_lower = q.lower().strip()
+    for page in range(1, 6):
+        data = _anikoto_get('/recent-anime', {'page': page, 'per_page': 20})
+        if not data or not data.get('ok') or not data.get('data'):
+            break
+        for anime in data['data']:
+            if mal_id and str(anime.get('mal_id')) == str(mal_id):
+                return jsonify({'ok': True, 'match': anime})
+            a_title = (anime.get('title') or '').lower().strip()
+            a_alt = (anime.get('alternative') or '').lower().strip()
+            if a_title == q_lower or a_alt == q_lower:
+                return jsonify({'ok': True, 'match': anime})
+            if q_lower in a_title or q_lower in a_alt:
+                if not best_match:
+                    best_match = anime
+
+    if best_match:
+        return jsonify({'ok': True, 'match': best_match})
+
+    return jsonify({'ok': False, 'error': 'No match found', 'query': q})
+
+
+# ============================================================
 # STATIC FILE SERVING
 # ============================================================
 

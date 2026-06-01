@@ -770,20 +770,13 @@ function closeMovieModal() {
   const modal = document.getElementById('modal-overlay');
   modal.style.display = 'none';
   document.body.style.overflow = '';
-  // Stop playing video when modal is closed — clear iframe src first
+  // Cleanly destroy all active players
+  _destroyCurrentPlayer('player-container');
+  _destroyCurrentPlayer('anime-player-container');
   const player = document.getElementById('player-container');
-  if (player) {
-    const iframe = player.querySelector('iframe');
-    if (iframe) iframe.src = 'about:blank';
-    player.innerHTML = '';
-  }
-  // Clear anime player too
+  if (player) player.innerHTML = '';
   const animePlayer = document.getElementById('anime-player-container');
-  if (animePlayer) {
-    const iframe = animePlayer.querySelector('iframe');
-    if (iframe) iframe.src = 'about:blank';
-    animePlayer.innerHTML = '';
-  }
+  if (animePlayer) animePlayer.innerHTML = '';
   activeStreamSource = null;
   activeAnimeSource = 'videasy';
   currentAnimeMovieId = null;
@@ -793,6 +786,60 @@ function closeMovieModal() {
 
 // --- Active stream source tracker ---
 let activeStreamSource = null;
+let _iframeLoadTimer = null; // Tracks iframe load timeout for auto-fallback
+let _hlsInstance = null; // HLS.js instance for direct player
+
+// Source priority for auto-cascade when one fails
+const ANIME_SOURCE_PRIORITY = ['videasy', 'autoembed', 'vidsrc', 'embed'];
+const MOVIE_SOURCE_PRIORITY = ['videasy', 'autoembed', 'vidsrc', 'embed'];
+
+function _destroyCurrentPlayer(containerId) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  // Kill any active HLS instance
+  if (_hlsInstance) { try { _hlsInstance.destroy(); } catch(e) {} _hlsInstance = null; }
+  // Blank out iframe src before removing to stop network requests
+  const iframe = container.querySelector('iframe');
+  if (iframe) { try { iframe.src = 'about:blank'; } catch(e) {} }
+  // Kill any running video element
+  const video = container.querySelector('video');
+  if (video) { try { video.pause(); video.src = ''; video.load(); } catch(e) {} }
+  // Clear load timer
+  if (_iframeLoadTimer) { clearTimeout(_iframeLoadTimer); _iframeLoadTimer = null; }
+}
+
+function _injectIframeWithTimeout(container, streamUrl, displayLabel, fallbackFn) {
+  // Inject iframe WITHOUT loading=lazy so it loads immediately
+  container.innerHTML =
+    '<div class="stream-loading-overlay" style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--text-muted);z-index:1;">' +
+    '<div class="loading-spinner" style="width:40px;height:40px;margin-bottom:10px;"></div>' +
+    '<span style="font-size:0.9rem;font-weight:600;">Loading ' + escapeHtml(displayLabel) + '...</span>' +
+    '</div>' +
+    '<iframe src="' + streamUrl + '" ' +
+    'style="position:absolute;inset:0;width:100%;height:100%;border:none;z-index:2;" ' +
+    'allowfullscreen allow="autoplay; encrypted-media; picture-in-picture; fullscreen" ' +
+    'referrerpolicy="no-referrer">' +
+    '</iframe>';
+
+  const iframe = container.querySelector('iframe');
+
+  // Hide loading spinner once iframe loads
+  if (iframe) {
+    iframe.addEventListener('load', function() {
+      const overlay = container.querySelector('.stream-loading-overlay');
+      if (overlay) overlay.style.display = 'none';
+      if (_iframeLoadTimer) { clearTimeout(_iframeLoadTimer); _iframeLoadTimer = null; }
+    });
+  }
+
+  // Auto-fallback: if iframe hasn't loaded in 12 seconds, try next source
+  if (fallbackFn) {
+    _iframeLoadTimer = setTimeout(function() {
+      console.warn('[Stream] Iframe load timeout for ' + displayLabel + ', trying fallback...');
+      fallbackFn();
+    }, 12000);
+  }
+}
 
 function buildStreamUrl(source, movie, episode) {
   const tmdbId = movie.id;
@@ -862,6 +909,9 @@ function switchStreamSource(source, movieId) {
   const container = document.getElementById('player-container');
   if (!container) return;
 
+  // Destroy previous player cleanly before creating new
+  _destroyCurrentPlayer('player-container');
+
   // Update button active states
   document.querySelectorAll('.stream-source-btn').forEach(btn => {
     const isCurrent = btn.getAttribute('data-source') === source;
@@ -886,18 +936,16 @@ function switchStreamSource(source, movieId) {
 
   const streamUrl = buildStreamUrl(source, movie, ep);
 
-  // Show loading then embed iframe
-  container.innerHTML =
-    '<div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--text-muted);z-index:1;">' +
-    '<div class="loading-spinner" style="width:40px;height:40px;margin-bottom:10px;"></div>' +
-    '<span style="font-size:0.9rem;font-weight:600;">Loading ' + escapeHtml(source) + ' player...</span>' +
-    '</div>' +
-    '<iframe src="' + streamUrl + '" ' +
-    'style="position:absolute;inset:0;width:100%;height:100%;border:none;z-index:2;" ' +
-    'allowfullscreen allow="autoplay; encrypted-media; picture-in-picture; fullscreen" ' +
-    'referrerpolicy="no-referrer" ' +
-    'loading="lazy">' +
-    '</iframe>';
+  // Build fallback function: try next source in priority list
+  const priorities = isAnime ? ANIME_SOURCE_PRIORITY : MOVIE_SOURCE_PRIORITY;
+  const currentIdx = priorities.indexOf(source);
+  const fallbackFn = (currentIdx >= 0 && currentIdx < priorities.length - 1) ? function() {
+    const nextSource = priorities[currentIdx + 1];
+    showToast('⏳ ' + source + ' timed out, trying ' + nextSource + '...');
+    switchStreamSource(nextSource, movieId);
+  } : null;
+
+  _injectIframeWithTimeout(container, streamUrl, source + ' player', fallbackFn);
 
   showToast('▶ Loading ' + (isAnime ? movie.title + ' Ep ' + ep : movie.title) + ' via ' + source + '...');
 
@@ -934,9 +982,10 @@ function buildAnimeStreamSection(movie) {
     '</div>' +
     '</div>' +
     '</div>' +
-    // Source selector buttons — only reliable sources available
+    // Source selector buttons — reliable sources + direct HLS.js player
     '<div id="anime-source-buttons" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;">' +
     '<button class="qbt-btn anime-src-btn active" data-source="videasy" style="flex:1;min-width:80px;padding:8px 12px;font-size:0.82rem;background:linear-gradient(135deg, #10b981, #059669);color:#fff;" onclick="switchAnimeSource(\'videasy\',' + movie.id + ')">▶ Videasy</button>' +
+    '<button class="qbt-btn anime-src-btn" data-source="direct" style="flex:1;min-width:80px;padding:8px 12px;font-size:0.82rem;background:var(--bg-card2);border:1px solid var(--border);color:var(--text-primary);" onclick="switchAnimeSource(\'direct\',' + movie.id + ')">🎬 Direct (HLS)</button>' +
     '<button class="qbt-btn anime-src-btn" data-source="anikoto" style="flex:1;min-width:80px;padding:8px 12px;font-size:0.82rem;background:var(--bg-card2);border:1px solid var(--border);color:var(--text-primary);" id="anikoto-src-btn" onclick="switchAnimeSource(\'anikoto\',' + movie.id + ')">▶ Anikoto</button>' +
     '</div>' +
     // Episode controls: dropdown + sub/dub
@@ -964,6 +1013,8 @@ function buildAnimeStreamSection(movie) {
 }
 
 // Resolve AniList ID and auto-play episode 1 when modal opens
+// NON-BLOCKING: starts playback immediately with best available source,
+// then resolves AniList ID in background for future episode switches.
 async function resolveAnilistAndAutoplay(movie) {
   const statusEl = document.getElementById('anime-player-status');
 
@@ -974,15 +1025,23 @@ async function resolveAnilistAndAutoplay(movie) {
     if (malMatch) malId = malMatch[1];
   }
 
-  // Try to resolve AniList ID for Videasy
+  // IMMEDIATELY start playing episode 1 — don't wait for AniList resolution
+  // Use whatever source is available right now (autoembed via MAL, or vidsrc)
+  if (currentAnimeMovieId === movie.id) {
+    if (statusEl) statusEl.textContent = 'Starting Episode 1...';
+    playAnimeEpisodeNow(movie.id);
+  }
+
+  // BACKGROUND: Resolve AniList ID for Videasy (improves future episode plays)
   if (malId) {
     try {
-      if (statusEl) statusEl.textContent = 'Resolving anime ID...';
       const res = await fetch('/api/anilist/mal/' + malId);
       const data = await res.json();
       if (data.ok && data.anilist_id) {
         activeAnimeAnilistId = data.anilist_id;
         console.log('[Anime] Resolved AniList ID:', activeAnimeAnilistId, 'for MAL:', malId);
+        // If still on this anime and using videasy, the next episode change
+        // will automatically use the resolved AniList ID (no need to re-render)
       } else {
         console.warn('[Anime] Could not resolve AniList ID for MAL:', malId);
       }
@@ -990,17 +1049,15 @@ async function resolveAnilistAndAutoplay(movie) {
       console.error('[Anime] AniList resolution failed:', e);
     }
   }
-
-  // Auto-play episode 1 if modal is still open for this movie
-  if (currentAnimeMovieId === movie.id) {
-    playAnimeEpisodeNow(movie.id);
-  }
 }
 
 // Switch source for anime streaming
 function switchAnimeSource(source, movieId) {
   activeAnimeSource = source;
   currentAnimeMovieId = movieId;
+
+  // Destroy current player before switching
+  _destroyCurrentPlayer('anime-player-container');
 
   // Update button active states
   document.querySelectorAll('.anime-src-btn').forEach(btn => {
@@ -1016,6 +1073,12 @@ function switchAnimeSource(source, movieId) {
       btn.style.borderColor = 'var(--border)';
     }
   });
+
+  // Direct HLS.js player
+  if (source === 'direct') {
+    playDirectHLS(movieId);
+    return;
+  }
 
   // If switching to Anikoto and we have Anikoto episodes loaded, use those
   if (source === 'anikoto' && anikotoState.episodes.length > 0) {
@@ -1057,6 +1120,12 @@ async function playAnimeEpisodeNow(movieId) {
   const epSelect = document.getElementById('anime-ep-select');
   const ep = epSelect ? parseInt(epSelect.value, 10) || 1 : 1;
 
+  // Direct HLS player
+  if (source === 'direct') {
+    playDirectHLS(movieId);
+    return;
+  }
+
   // If source is anikoto and we have episodes, delegate to Anikoto player
   if (source === 'anikoto' && anikotoState.episodes.length > 0) {
     const anikotoEp = anikotoState.episodes.find(e => parseInt(e.number) === ep);
@@ -1065,6 +1134,9 @@ async function playAnimeEpisodeNow(movieId) {
       return;
     }
   }
+
+  // Destroy previous player before creating new
+  _destroyCurrentPlayer('anime-player-container');
 
   // Build stream URL using the already-resolved AniList ID (pre-fetched on modal open)
   const streamUrl = buildStreamUrl(source, movie, ep);
@@ -1078,17 +1150,25 @@ async function playAnimeEpisodeNow(movieId) {
     displaySource = movie.anime_link ? 'autoembed' : 'vidsrc';
   }
 
-  container.innerHTML =
-    '<div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--text-muted);z-index:1;">' +
-    '<div class="loading-spinner" style="width:40px;height:40px;margin-bottom:10px;"></div>' +
-    '<span style="font-size:0.9rem;font-weight:600;">Loading Episode ' + ep + ' via ' + displaySource + '...</span>' +
-    '</div>' +
-    '<iframe src="' + streamUrl + '" ' +
-    'style="position:absolute;inset:0;width:100%;height:100%;border:none;z-index:2;" ' +
-    'allowfullscreen allow="autoplay; encrypted-media; picture-in-picture; fullscreen" ' +
-    'referrerpolicy="no-referrer" ' +
-    'loading="lazy">' +
-    '</iframe>';
+  // Build auto-fallback: try next source if iframe doesn't load
+  const animeSources = ['videasy', 'autoembed', 'vidsrc', 'embed'];
+  const srcIdx = animeSources.indexOf(source);
+  const fallbackFn = (srcIdx >= 0 && srcIdx < animeSources.length - 1) ? function() {
+    const nextSrc = animeSources[srcIdx + 1];
+    showToast('⏳ ' + displaySource + ' timed out, trying ' + nextSrc + '...');
+    activeAnimeSource = nextSrc;
+    // Update button active states
+    document.querySelectorAll('.anime-src-btn').forEach(btn => {
+      const isCurrent = btn.getAttribute('data-source') === nextSrc;
+      btn.classList.toggle('active', isCurrent);
+      btn.style.background = isCurrent ? 'linear-gradient(135deg, #10b981, #059669)' : 'var(--bg-card2)';
+      btn.style.color = isCurrent ? '#fff' : 'var(--text-primary)';
+      btn.style.borderColor = isCurrent ? 'transparent' : 'var(--border)';
+    });
+    playAnimeEpisodeNow(movieId);
+  } : null;
+
+  _injectIframeWithTimeout(container, streamUrl, 'Episode ' + ep + ' via ' + displaySource, fallbackFn);
 
   // Update episode grid active state
   updateEpGridActive(ep);
@@ -1108,7 +1188,7 @@ function updateEpGridActive(epNum) {
   });
 }
 
-// Anikoto background search (non-blocking)
+// Anikoto background search (non-blocking) — uses fast search endpoint
 async function searchAnikotoForAnime(movie) {
   const anikotoBtn = document.getElementById('anikoto-src-btn');
 
@@ -1120,7 +1200,8 @@ async function searchAnikotoForAnime(movie) {
   }
 
   try {
-    const searchUrl = '/api/anikoto/search-title?q=' + encodeURIComponent(movie.title) + (malId ? '&mal_id=' + malId : '');
+    // Use the fast search endpoint (direct search, max 5 page fallback instead of 30)
+    const searchUrl = '/api/anikoto/search-fast?q=' + encodeURIComponent(movie.title) + (malId ? '&mal_id=' + malId : '');
     const res = await fetch(searchUrl);
     const data = await res.json();
 
@@ -1186,20 +1267,17 @@ function playAnikotoEpisode(embedId) {
     return;
   }
 
+  // Destroy previous player before creating new
+  _destroyCurrentPlayer('anime-player-container');
+
   const container = document.getElementById('anime-player-container');
   if (!container) return;
 
-  container.innerHTML =
-    '<div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--text-muted);z-index:1;">' +
-    '<div class="loading-spinner" style="width:40px;height:40px;margin-bottom:10px;"></div>' +
-    '<span style="font-size:0.9rem;font-weight:600;">Loading Episode ' + ep.number + ' (' + lang.toUpperCase() + ')...</span>' +
-    '</div>' +
-    '<iframe src="' + embedUrl + '" ' +
-    'style="position:absolute;inset:0;width:100%;height:100%;border:none;z-index:2;" ' +
-    'allowfullscreen allow="autoplay; encrypted-media; picture-in-picture; fullscreen" ' +
-    'referrerpolicy="no-referrer" ' +
-    'loading="lazy">' +
-    '</iframe>';
+  _injectIframeWithTimeout(container, embedUrl, 'Episode ' + ep.number + ' (' + lang.toUpperCase() + ')', function() {
+    // Fallback: switch to videasy if Anikoto embed fails
+    showToast('⏳ Anikoto timed out, switching to Videasy...');
+    switchAnimeSource('videasy', currentAnimeMovieId);
+  });
 
   // Update dropdown to match
   const select = document.getElementById('anime-ep-select');
@@ -1287,6 +1365,177 @@ function playEpFromGrid(epNum, movieId) {
 // Legacy function kept for compatibility
 function playAnimeViaFallback(source, movieId) {
   switchAnimeSource(source, movieId);
+}
+
+// ============================================================
+// DIRECT HLS.js PLAYER — plays .m3u8 streams without iframes
+// ============================================================
+async function playDirectHLS(movieId) {
+  const movie = appState.movies.find(m => m.id == movieId);
+  if (!movie) return;
+
+  const epSelect = document.getElementById('anime-ep-select');
+  const ep = epSelect ? parseInt(epSelect.value, 10) || 1 : 1;
+
+  // Destroy previous player
+  _destroyCurrentPlayer('anime-player-container');
+
+  const container = document.getElementById('anime-player-container');
+  if (!container) return;
+
+  // Show loading
+  container.innerHTML =
+    '<div class="stream-loading-overlay" style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--text-muted);z-index:3;">' +
+    '<div class="loading-spinner" style="width:40px;height:40px;margin-bottom:10px;"></div>' +
+    '<span style="font-size:0.9rem;font-weight:600;">Fetching direct stream for Episode ' + ep + '...</span>' +
+    '<span style="font-size:0.78rem;opacity:0.6;margin-top:4px;">This uses HLS.js — no buffering!</span>' +
+    '</div>';
+
+  // We need an AniList ID to call the stream endpoint
+  if (!activeAnimeAnilistId) {
+    // Try to resolve AniList ID if not yet available
+    let malId = null;
+    if (movie.anime_link) {
+      const malMatch = movie.anime_link.match(/anime\/(\d+)/);
+      if (malMatch) malId = malMatch[1];
+    }
+    if (malId) {
+      try {
+        const res = await fetch('/api/anilist/mal/' + malId);
+        const data = await res.json();
+        if (data.ok && data.anilist_id) {
+          activeAnimeAnilistId = data.anilist_id;
+        }
+      } catch (e) {
+        console.error('[Direct HLS] AniList resolution failed:', e);
+      }
+    }
+  }
+
+  if (!activeAnimeAnilistId) {
+    container.innerHTML =
+      '<div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--text-muted);">' +
+      '<span style="font-size:2rem;margin-bottom:10px;">❌</span>' +
+      '<span style="font-weight:600;font-size:0.9rem;">Could not resolve anime ID for direct streaming</span>' +
+      '<span style="font-size:0.78rem;opacity:0.6;margin-top:4px;">Try Videasy or Autoembed instead</span>' +
+      '</div>';
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/stream/' + activeAnimeAnilistId + '/' + ep);
+    const data = await res.json();
+
+    if (!data.ok || !data.sources || !data.sources.length) {
+      container.innerHTML =
+        '<div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--text-muted);">' +
+        '<span style="font-size:2rem;margin-bottom:10px;">❌</span>' +
+        '<span style="font-weight:600;font-size:0.9rem;">No direct stream sources found for Episode ' + ep + '</span>' +
+        '<span style="font-size:0.78rem;opacity:0.6;margin-top:4px;">Try Videasy or Autoembed instead</span>' +
+        '</div>';
+      return;
+    }
+
+    // Pick the best source (first one, already sorted by quality)
+    const bestSource = data.sources[0];
+    const videoUrl = bestSource.url;
+    const isM3U8 = bestSource.isM3U8;
+
+    // Build a native video player
+    container.innerHTML =
+      '<video id="hls-direct-video" style="width:100%;height:100%;background:#000;" controls autoplay playsinline></video>' +
+      '<div id="hls-quality-bar" style="position:absolute;bottom:0;left:0;right:0;padding:6px 12px;background:linear-gradient(transparent, rgba(0,0,0,0.8));display:flex;gap:6px;align-items:center;z-index:5;flex-wrap:wrap;"></div>';
+
+    const video = document.getElementById('hls-direct-video');
+    const qualityBar = document.getElementById('hls-quality-bar');
+
+    if (isM3U8 && typeof Hls !== 'undefined' && Hls.isSupported()) {
+      // Use HLS.js to play .m3u8
+      const hls = new Hls({
+        maxBufferLength: 30,
+        maxMaxBufferLength: 60,
+        startLevel: -1, // auto quality
+        capLevelToPlayerSize: true,
+        enableWorker: true,
+      });
+      _hlsInstance = hls;
+
+      hls.loadSource(videoUrl);
+      hls.attachMedia(video);
+
+      hls.on(Hls.Events.MANIFEST_PARSED, function(event, data) {
+        console.log('[HLS] Manifest parsed, levels:', data.levels.length);
+        video.play().catch(e => console.log('[HLS] Autoplay blocked:', e));
+
+        // Build quality selector buttons
+        if (qualityBar && data.levels.length > 1) {
+          let qHtml = '<span style="color:#aaa;font-size:0.72rem;font-weight:600;margin-right:4px;">Quality:</span>';
+          qHtml += '<button class="hls-q-btn" style="padding:3px 8px;font-size:0.72rem;border-radius:4px;border:1px solid rgba(255,255,255,0.2);background:rgba(139,92,246,0.6);color:#fff;cursor:pointer;" onclick="if(_hlsInstance)_hlsInstance.currentLevel=-1">AUTO</button>';
+          data.levels.forEach(function(level, idx) {
+            qHtml += '<button class="hls-q-btn" style="padding:3px 8px;font-size:0.72rem;border-radius:4px;border:1px solid rgba(255,255,255,0.2);background:rgba(255,255,255,0.1);color:#fff;cursor:pointer;" onclick="if(_hlsInstance)_hlsInstance.currentLevel=' + idx + '">' + level.height + 'p</button>';
+          });
+          qualityBar.innerHTML = qHtml;
+        } else if (qualityBar) {
+          qualityBar.style.display = 'none';
+        }
+      });
+
+      hls.on(Hls.Events.ERROR, function(event, data) {
+        console.error('[HLS] Error:', data.type, data.details);
+        if (data.fatal) {
+          switch (data.type) {
+            case Hls.ErrorTypes.NETWORK_ERROR:
+              console.log('[HLS] Fatal network error, trying recovery...');
+              hls.startLoad();
+              break;
+            case Hls.ErrorTypes.MEDIA_ERROR:
+              console.log('[HLS] Fatal media error, trying recovery...');
+              hls.recoverMediaError();
+              break;
+            default:
+              showToast('❌ HLS playback failed. Switching to Videasy...');
+              hls.destroy();
+              _hlsInstance = null;
+              switchAnimeSource('videasy', movieId);
+              break;
+          }
+        }
+      });
+
+    } else if (isM3U8 && video.canPlayType('application/vnd.apple.mpegurl')) {
+      // Safari native HLS
+      video.src = videoUrl;
+      video.play().catch(e => console.log('[HLS] Safari autoplay blocked:', e));
+      if (qualityBar) qualityBar.style.display = 'none';
+    } else if (!isM3U8) {
+      // Direct MP4
+      video.src = videoUrl;
+      video.play().catch(e => console.log('[Direct] Autoplay blocked:', e));
+      if (qualityBar) qualityBar.style.display = 'none';
+    } else {
+      container.innerHTML =
+        '<div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--text-muted);">' +
+        '<span style="font-size:2rem;margin-bottom:10px;">⚠️</span>' +
+        '<span style="font-weight:600;font-size:0.9rem;">HLS.js not available in this browser</span>' +
+        '<span style="font-size:0.78rem;opacity:0.6;margin-top:4px;">Try Videasy or Autoembed instead</span>' +
+        '</div>';
+      return;
+    }
+
+    // Update episode grid active state
+    updateEpGridActive(ep);
+    showToast('▶ Playing Episode ' + ep + ' via Direct HLS — ' + bestSource.quality);
+    setTimeout(() => container.scrollIntoView({ behavior: 'smooth', block: 'center' }), 200);
+
+  } catch (err) {
+    console.error('[Direct HLS] Failed:', err);
+    container.innerHTML =
+      '<div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--text-muted);">' +
+      '<span style="font-size:2rem;margin-bottom:10px;">❌</span>' +
+      '<span style="font-weight:600;font-size:0.9rem;">Direct stream failed</span>' +
+      '<span style="font-size:0.78rem;opacity:0.6;margin-top:4px;">' + escapeHtml(err.message) + '</span>' +
+      '</div>';
+  }
 }
 
 // ============================================================
