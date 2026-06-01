@@ -545,6 +545,230 @@ def get_anilist_id(mal_id):
 
 
 # ============================================================
+# JIKAN (MyAnimeList) API PROXY
+# ============================================================
+# Proxies requests to the Jikan v4 API (api.jikan.moe) for rich
+# anime metadata: episode titles, air dates, MAL scores, synopses.
+# Cached in-memory to respect Jikan's rate limits (3 req/s).
+
+_jikan_cache = {}
+_JIKAN_CACHE_TTL = 900  # 15 minutes (Jikan data doesn't change often)
+_JIKAN_API_BASE = 'https://api.jikan.moe/v4'
+
+
+def _jikan_get(path, params=None):
+    """Fetch from Jikan API with caching and rate-limit awareness."""
+    cache_key = 'jikan:' + path + (json.dumps(params, sort_keys=True) if params else '')
+    now = time.time()
+    if cache_key in _jikan_cache:
+        data, ts = _jikan_cache[cache_key]
+        if now - ts < _JIKAN_CACHE_TTL:
+            return data
+
+    try:
+        resp = requests.get(
+            f'{_JIKAN_API_BASE}{path}',
+            params=params,
+            timeout=15,
+            headers={'Accept': 'application/json'}
+        )
+        # Jikan returns 429 on rate limit
+        if resp.status_code == 429:
+            print(f'[Jikan] Rate limited on {path}, returning cached or None')
+            if cache_key in _jikan_cache:
+                return _jikan_cache[cache_key][0]
+            return None
+        resp.raise_for_status()
+        data = resp.json()
+        _jikan_cache[cache_key] = (data, now)
+        return data
+    except Exception as e:
+        print(f'[Jikan Proxy] Error fetching {path}: {e}')
+        # Return stale cache if available
+        if cache_key in _jikan_cache:
+            return _jikan_cache[cache_key][0]
+        return None
+
+
+@app.route('/api/jikan/search', methods=['GET'])
+def jikan_search():
+    """
+    Search for anime on MAL via Jikan.
+    Query params:
+      - q: search query (required)
+      - limit: max results (default 10, max 25)
+    Returns: Jikan search results with MAL metadata.
+    """
+    q = request.args.get('q', '').strip()
+    if not q:
+        return jsonify({'ok': False, 'error': 'Missing query parameter q'}), 400
+
+    limit = min(25, max(1, int(request.args.get('limit', 10))))
+    data = _jikan_get('/anime', {'q': q, 'limit': limit, 'order_by': 'score', 'sort': 'desc'})
+
+    if not data:
+        return jsonify({'ok': False, 'error': 'Jikan API unavailable'}), 502
+
+    results = []
+    for item in data.get('data', []):
+        results.append({
+            'mal_id': item.get('mal_id'),
+            'title': item.get('title'),
+            'title_english': item.get('title_english'),
+            'title_japanese': item.get('title_japanese'),
+            'type': item.get('type'),
+            'episodes': item.get('episodes'),
+            'status': item.get('status'),
+            'score': item.get('score'),
+            'synopsis': item.get('synopsis'),
+            'year': item.get('year'),
+            'poster_url': (item.get('images', {}).get('jpg', {}).get('large_image_url')
+                          or item.get('images', {}).get('jpg', {}).get('image_url')),
+            'url': item.get('url'),
+        })
+
+    return jsonify({
+        'ok': True,
+        'results': results,
+        'total': data.get('pagination', {}).get('items', {}).get('total', len(results))
+    })
+
+
+@app.route('/api/jikan/anime/<int:mal_id>', methods=['GET'])
+def jikan_anime_details(mal_id):
+    """
+    Get full anime details from MAL via Jikan.
+    Returns: detailed anime info including synopsis, score, genres, studios.
+    """
+    data = _jikan_get(f'/anime/{mal_id}/full')
+    if not data or not data.get('data'):
+        return jsonify({'ok': False, 'error': 'Anime not found on MAL', 'mal_id': mal_id}), 404
+
+    anime = data['data']
+    return jsonify({
+        'ok': True,
+        'data': {
+            'mal_id': anime.get('mal_id'),
+            'title': anime.get('title'),
+            'title_english': anime.get('title_english'),
+            'title_japanese': anime.get('title_japanese'),
+            'type': anime.get('type'),
+            'episodes': anime.get('episodes'),
+            'status': anime.get('status'),
+            'duration': anime.get('duration'),
+            'score': anime.get('score'),
+            'scored_by': anime.get('scored_by'),
+            'rank': anime.get('rank'),
+            'popularity': anime.get('popularity'),
+            'synopsis': anime.get('synopsis'),
+            'year': anime.get('year'),
+            'season': anime.get('season'),
+            'studios': [s.get('name') for s in (anime.get('studios') or [])],
+            'genres': [g.get('name') for g in (anime.get('genres') or [])],
+            'themes': [t.get('name') for t in (anime.get('themes') or [])],
+            'poster_url': (anime.get('images', {}).get('jpg', {}).get('large_image_url')
+                          or anime.get('images', {}).get('jpg', {}).get('image_url')),
+            'trailer_url': anime.get('trailer', {}).get('url'),
+            'url': anime.get('url'),
+            'rating': anime.get('rating'),
+            'source': anime.get('source'),
+            'relations': [{
+                'relation': r.get('relation'),
+                'entries': [{'mal_id': e.get('mal_id'), 'type': e.get('type'), 'name': e.get('name')} for e in r.get('entry', [])]
+            } for r in (anime.get('relations') or [])],
+            'streaming': [{'name': s.get('name'), 'url': s.get('url')} for s in (anime.get('streaming') or [])],
+        }
+    })
+
+
+@app.route('/api/jikan/anime/<int:mal_id>/episodes', methods=['GET'])
+def jikan_anime_episodes(mal_id):
+    """
+    Get episodes for an anime from MAL via Jikan.
+    Jikan paginates at 100 episodes per page.
+    Query params:
+      - page: page number (default 1)
+    Returns: episode list with titles, air dates, and filler flags.
+    """
+    page = max(1, int(request.args.get('page', 1)))
+    data = _jikan_get(f'/anime/{mal_id}/episodes', {'page': page})
+
+    if not data:
+        return jsonify({'ok': False, 'error': 'Failed to fetch episodes', 'mal_id': mal_id}), 502
+
+    episodes = []
+    for ep in data.get('data', []):
+        episodes.append({
+            'mal_id': ep.get('mal_id'),
+            'number': ep.get('mal_id'),  # episode number
+            'title': ep.get('title'),
+            'title_japanese': ep.get('title_japanese'),
+            'title_romanji': ep.get('title_romanji'),
+            'aired': ep.get('aired'),
+            'filler': ep.get('filler', False),
+            'recap': ep.get('recap', False),
+            'url': ep.get('url'),
+        })
+
+    pagination = data.get('pagination', {})
+    return jsonify({
+        'ok': True,
+        'mal_id': mal_id,
+        'episodes': episodes,
+        'has_next': pagination.get('has_next_page', False),
+        'total': pagination.get('items', {}).get('total', len(episodes)),
+        'page': page,
+    })
+
+
+@app.route('/api/jikan/anime/<int:mal_id>/episodes/all', methods=['GET'])
+def jikan_anime_all_episodes(mal_id):
+    """
+    Get ALL episodes for an anime (auto-paginates through all pages).
+    Useful for building a full episode selector.
+    Cached aggressively since episode lists rarely change.
+    """
+    cache_key = f'jikan_all_eps:{mal_id}'
+    now = time.time()
+    if cache_key in _jikan_cache:
+        cached_data, ts = _jikan_cache[cache_key]
+        if now - ts < _JIKAN_CACHE_TTL * 2:  # 30 min cache for full episode lists
+            return jsonify(cached_data)
+
+    all_episodes = []
+    page = 1
+    while True:
+        data = _jikan_get(f'/anime/{mal_id}/episodes', {'page': page})
+        if not data or not data.get('data'):
+            break
+
+        for ep in data['data']:
+            all_episodes.append({
+                'number': ep.get('mal_id'),
+                'title': ep.get('title'),
+                'title_japanese': ep.get('title_japanese'),
+                'aired': ep.get('aired'),
+                'filler': ep.get('filler', False),
+                'recap': ep.get('recap', False),
+            })
+
+        if not data.get('pagination', {}).get('has_next_page', False):
+            break
+        page += 1
+        # Rate limit safety: Jikan allows 3 req/s
+        time.sleep(0.4)
+
+    result = {
+        'ok': True,
+        'mal_id': mal_id,
+        'episodes': all_episodes,
+        'total': len(all_episodes)
+    }
+    _jikan_cache[cache_key] = (result, now)
+    return jsonify(result)
+
+
+# ============================================================
 # DIRECT STREAM PROXY (HLS.js compatible)
 # ============================================================
 # Fetches direct .m3u8 / .mp4 video URLs from Consumet API

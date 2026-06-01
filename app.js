@@ -696,7 +696,6 @@ function openMovieModal(id) {
       '<p style="font-size:0.82rem;color:var(--text-muted);margin-bottom:10px;">Stream instantly in your browser — pick a source below.</p>' +
       '<div class="stream-controls" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px;">' +
       '<button class="qbt-btn stream-source-btn active" data-source="videasy" style="flex:1;background:linear-gradient(135deg, #10b981, #059669);" onclick="switchStreamSource(\'videasy\',' + movie.id + ')">▶ Videasy</button>' +
-      '<button class="qbt-btn stream-source-btn" data-source="autoembed" style="flex:1;background:var(--bg-card2);border:1px solid var(--border);color:var(--text-primary);" onclick="switchStreamSource(\'autoembed\',' + movie.id + ')">▶ AutoEmbed</button>' +
       '<button class="qbt-btn stream-source-btn" data-source="vidsrc" style="flex:1;background:var(--bg-card2);border:1px solid var(--border);color:var(--text-primary);" onclick="switchStreamSource(\'vidsrc\',' + movie.id + ')">▶ VidSrc</button>' +
       '<button class="qbt-btn stream-source-btn" data-source="embed" style="flex:1;background:var(--bg-card2);border:1px solid var(--border);color:var(--text-primary);" onclick="switchStreamSource(\'embed\',' + movie.id + ')">▶ MultiEmbed</button>' +
       '</div>' +
@@ -735,6 +734,7 @@ function openMovieModal(id) {
     currentAnimeMovieId = movie.id;
     activeAnimeAnilistId = null;
     anikotoState = { episodes: [], seriesId: null, currentEp: null, lang: 'sub' };
+    jikanState = { episodes: [], malId: null, animeInfo: null, loaded: false };
 
     // Build the episode number grid (quick-click buttons)
     if (totalEps > 0) {
@@ -782,6 +782,7 @@ function closeMovieModal() {
   currentAnimeMovieId = null;
   activeAnimeAnilistId = null;
   anikotoState = { episodes: [], seriesId: null, currentEp: null, lang: 'sub' };
+  jikanState = { episodes: [], malId: null, animeInfo: null, loaded: false };
 }
 
 // --- Active stream source tracker ---
@@ -790,8 +791,8 @@ let _iframeLoadTimer = null; // Tracks iframe load timeout for auto-fallback
 let _hlsInstance = null; // HLS.js instance for direct player
 
 // Source priority for auto-cascade when one fails
-const ANIME_SOURCE_PRIORITY = ['videasy', 'autoembed', 'vidsrc', 'embed'];
-const MOVIE_SOURCE_PRIORITY = ['videasy', 'autoembed', 'vidsrc', 'embed'];
+const ANIME_SOURCE_PRIORITY = ['videasy', 'vidsrc', 'embed'];
+const MOVIE_SOURCE_PRIORITY = ['videasy', 'vidsrc', 'embed'];
 
 function _destroyCurrentPlayer(containerId) {
   const container = document.getElementById(containerId);
@@ -861,21 +862,14 @@ function buildStreamUrl(source, movie, episode) {
         if (activeAnimeAnilistId) {
           return 'https://player.videasy.net/anime/' + activeAnimeAnilistId + '/' + ep + '?color=8B5CF6&episodeSelector=true&nextEpisode=true&autoplayNextEpisode=true';
         }
-        // Fallback: use MAL ID with autoembed instead of broken TV format
+        // Fallback: use MAL ID with vidsrc instead of broken TV format
         if (malId) {
-          return 'https://autoembed.to/anime/mal/' + malId + '/' + ep;
+          return 'https://vidsrc.cc/v2/embed/anime/mal/' + malId + '/' + ep;
         }
         // Last resort: try title-based search on vidsrc
         return 'https://vidsrc.cc/v2/embed/tv/' + tmdbId + '/1/' + ep;
       }
       return 'https://player.videasy.net/movie/' + tmdbId + '?color=8B5CF6';
-
-    case 'autoembed':
-      if (isAnime) {
-        if (malId) return 'https://autoembed.to/anime/mal/' + malId + '/' + ep;
-        return 'https://autoembed.to/tv/tmdb/' + tmdbId + '-1-' + ep;
-      }
-      return 'https://autoembed.to/movie/tmdb/' + tmdbId;
 
     case 'vidsrc':
       if (isAnime) {
@@ -892,7 +886,7 @@ function buildStreamUrl(source, movie, episode) {
 
     default:
       if (isAnime && activeAnimeAnilistId) return 'https://player.videasy.net/anime/' + activeAnimeAnilistId + '/' + ep + '?color=8B5CF6&episodeSelector=true&nextEpisode=true&autoplayNextEpisode=true';
-      if (isAnime && malId) return 'https://autoembed.to/anime/mal/' + malId + '/' + ep;
+      if (isAnime && malId) return 'https://vidsrc.cc/v2/embed/anime/mal/' + malId + '/' + ep;
       return 'https://player.videasy.net/movie/' + tmdbId;
   }
 }
@@ -962,6 +956,120 @@ let activeAnimeSource = 'videasy'; // Track the active anime source
 let currentAnimeMovieId = null; // Track which anime is open
 let activeAnimeAnilistId = null; // AniList ID for Videasy
 
+// ============================================================
+// JIKAN (MyAnimeList) INTEGRATION
+// ============================================================
+// Fetches rich episode metadata (titles, air dates, filler flags)
+// from the Jikan/MAL API to enhance the episode grid.
+let jikanState = { episodes: [], malId: null, animeInfo: null, loaded: false };
+
+async function fetchJikanEpisodes(movie) {
+  // Extract MAL ID from anime_link
+  let malId = null;
+  if (movie.anime_link) {
+    const malMatch = movie.anime_link.match(/anime\/(\d+)/);
+    if (malMatch) malId = malMatch[1];
+  }
+  if (!malId) return;
+  jikanState.malId = malId;
+
+  try {
+    // Fetch anime details and episodes in parallel
+    const [detailsRes, episodesRes] = await Promise.all([
+      fetch('/api/jikan/anime/' + malId),
+      fetch('/api/jikan/anime/' + malId + '/episodes/all')
+    ]);
+    const detailsData = await detailsRes.json();
+    const episodesData = await episodesRes.json();
+
+    if (detailsData.ok && detailsData.data) {
+      jikanState.animeInfo = detailsData.data;
+      // Update modal with MAL info badge
+      renderJikanInfoBadge(detailsData.data);
+    }
+
+    if (episodesData.ok && episodesData.episodes) {
+      jikanState.episodes = episodesData.episodes;
+      jikanState.loaded = true;
+      // Enrich the episode grid with titles
+      enrichEpisodeGridWithJikan();
+      console.log('[Jikan] Loaded ' + episodesData.episodes.length + ' episode titles for MAL:' + malId);
+    }
+  } catch (err) {
+    console.warn('[Jikan] Failed to fetch episode data:', err);
+  }
+}
+
+function renderJikanInfoBadge(info) {
+  const container = document.getElementById('jikan-info-panel');
+  if (!container) return;
+
+  let html = '';
+  if (info.score) {
+    html += '<span class="modal-badge mb-rating" style="background:linear-gradient(135deg,#f59e0b,#d97706);color:#fff;">\u2b50 MAL ' + info.score + '/10</span>';
+  }
+  if (info.rank) {
+    html += '<span class="modal-badge mb-rating">#' + info.rank + ' Ranked</span>';
+  }
+  if (info.studios && info.studios.length) {
+    html += '<span class="modal-badge mb-lang">\ud83c\udfac ' + escapeHtml(info.studios[0]) + '</span>';
+  }
+  if (info.source) {
+    html += '<span class="modal-badge mb-lang">\ud83d\udcd6 ' + escapeHtml(info.source) + '</span>';
+  }
+  if (info.season && info.year) {
+    html += '<span class="modal-badge mb-lang">\ud83d\udcc5 ' + escapeHtml(info.season.charAt(0).toUpperCase() + info.season.slice(1)) + ' ' + info.year + '</span>';
+  }
+  if (info.status) {
+    var statusColor = info.status === 'Currently Airing' ? '#10b981' : (info.status === 'Finished Airing' ? '#6366f1' : '#f59e0b');
+    html += '<span class="modal-badge" style="background:' + statusColor + ';color:#fff;">' + escapeHtml(info.status) + '</span>';
+  }
+  // Streaming links from MAL
+  if (info.streaming && info.streaming.length) {
+    info.streaming.forEach(function(s) {
+      html += '<a href="' + s.url + '" target="_blank" rel="noopener" class="modal-badge mb-lang" style="text-decoration:none;cursor:pointer;" onclick="showToast(\'Opening ' + escapeHtml(s.name) + '...\')">' + escapeHtml(s.name) + ' \u2197</a>';
+    });
+  }
+
+  container.innerHTML = html;
+  container.style.display = html ? 'flex' : 'none';
+}
+
+function enrichEpisodeGridWithJikan() {
+  if (!jikanState.loaded || !jikanState.episodes.length) return;
+
+  // Enrich the episode grid buttons with titles
+  document.querySelectorAll('.anime-ep-grid-btn').forEach(function(btn) {
+    var epNum = parseInt(btn.dataset.ep);
+    var jikanEp = jikanState.episodes.find(function(e) { return e.number === epNum; });
+    if (jikanEp && jikanEp.title) {
+      btn.title = 'Ep ' + epNum + ': ' + jikanEp.title + (jikanEp.filler ? ' [FILLER]' : '') + (jikanEp.recap ? ' [RECAP]' : '');
+      // Add filler/recap visual indicator
+      if (jikanEp.filler) {
+        btn.style.borderLeft = '3px solid #f59e0b';
+      }
+      if (jikanEp.recap) {
+        btn.style.borderLeft = '3px solid #6366f1';
+      }
+    }
+  });
+
+  // Also enrich the episode dropdown with titles
+  var select = document.getElementById('anime-ep-select');
+  if (select) {
+    Array.from(select.options).forEach(function(opt) {
+      var epNum = parseInt(opt.value);
+      var jikanEp = jikanState.episodes.find(function(e) { return e.number === epNum; });
+      if (jikanEp && jikanEp.title) {
+        var label = 'Episode ' + epNum + ' \u2014 ' + jikanEp.title;
+        if (jikanEp.filler) label += ' \u26a0\ufe0fFILLER';
+        if (jikanEp.recap) label += ' \ud83d\udd04RECAP';
+        opt.textContent = label;
+      }
+    });
+  }
+}
+
 function buildAnimeStreamSection(movie) {
   const totalEps = parseInt(movie.episodes) || 24;
   currentAnimeMovieId = movie.id;
@@ -982,6 +1090,8 @@ function buildAnimeStreamSection(movie) {
     '</div>' +
     '</div>' +
     '</div>' +
+    // Jikan/MAL info panel (populated asynchronously by fetchJikanEpisodes)
+    '<div id="jikan-info-panel" style="display:none;gap:6px;flex-wrap:wrap;margin-bottom:14px;align-items:center;"></div>' +
     // Source selector buttons — reliable sources + direct HLS.js player
     '<div id="anime-source-buttons" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;">' +
     '<button class="qbt-btn anime-src-btn active" data-source="videasy" style="flex:1;min-width:80px;padding:8px 12px;font-size:0.82rem;background:linear-gradient(135deg, #10b981, #059669);color:#fff;" onclick="switchAnimeSource(\'videasy\',' + movie.id + ')">▶ Videasy</button>' +
@@ -1025,8 +1135,11 @@ async function resolveAnilistAndAutoplay(movie) {
     if (malMatch) malId = malMatch[1];
   }
 
+  // Kick off Jikan episode data fetch in background (non-blocking)
+  fetchJikanEpisodes(movie);
+
   // IMMEDIATELY start playing episode 1 — don't wait for AniList resolution
-  // Use whatever source is available right now (autoembed via MAL, or vidsrc)
+  // Use whatever source is available right now (vidsrc via MAL, or videasy fallback)
   if (currentAnimeMovieId === movie.id) {
     if (statusEl) statusEl.textContent = 'Starting Episode 1...';
     playAnimeEpisodeNow(movie.id);
@@ -1147,11 +1260,11 @@ async function playAnimeEpisodeNow(movieId) {
   let displaySource = source;
   if (source === 'videasy' && !activeAnimeAnilistId) {
     // AniList ID unavailable, so buildStreamUrl used a fallback source
-    displaySource = movie.anime_link ? 'autoembed' : 'vidsrc';
+    displaySource = 'vidsrc';
   }
 
   // Build auto-fallback: try next source if iframe doesn't load
-  const animeSources = ['videasy', 'autoembed', 'vidsrc', 'embed'];
+  const animeSources = ['videasy', 'vidsrc', 'embed'];
   const srcIdx = animeSources.indexOf(source);
   const fallbackFn = (srcIdx >= 0 && srcIdx < animeSources.length - 1) ? function() {
     const nextSrc = animeSources[srcIdx + 1];
