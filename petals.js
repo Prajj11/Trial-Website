@@ -40,76 +40,23 @@
             this.ySpeed = 1 + Math.random() * 1.5; // Gravity effect
             this.rotation = Math.random() * Math.PI * 2;
             this.rotationSpeed = Math.random() * 0.02 - 0.01;
-            this.setTheme();
-        }
-
-        setTheme() {
-            const isLight = document.documentElement.getAttribute('data-theme') === 'light';
-            if (isLight) {
-                // Dark autumn/maple colors for light mode
-                const colors = ['40, 20, 10', '60, 25, 10', '30, 15, 5', '20, 20, 20'];
-                this.color = colors[Math.floor(Math.random() * colors.length)];
-                this.type = 'maple';
-            } else {
-                // Soft pink cherry blossom colors for dark mode
-                const colors = ['255, 183, 197', '255, 158, 175', '255, 192, 203'];
-                this.color = colors[Math.floor(Math.random() * colors.length)];
-                this.type = 'sakura';
-            }
+            
+            // Soft pink cherry blossom colors
+            const colors = ['255, 183, 197', '255, 158, 175', '255, 192, 203'];
+            this.color = colors[Math.floor(Math.random() * colors.length)];
         }
 
         draw() {
-            // Check theme dynamically
-            const isLight = document.documentElement.getAttribute('data-theme') === 'light';
-            const expectedType = isLight ? 'maple' : 'sakura';
-            if (this.type !== expectedType) {
-                this.setTheme();
-            }
-
             ctx.save();
             ctx.translate(this.x, this.y);
             ctx.rotate(this.rotation);
             ctx.scale(Math.cos(this.flip), 1); // 3D flip effect
             
             ctx.beginPath();
-            
-            if (this.type === 'sakura') {
-                // A realistic cherry blossom petal shape
-                ctx.moveTo(0, this.h / 2); // Bottom tip
-                ctx.bezierCurveTo(this.w, this.h / 4, this.w / 1.5, -this.h / 2, 0, -this.h / 2.5); // Right curve with a cleft
-                ctx.bezierCurveTo(-this.w / 1.5, -this.h / 2, -this.w, this.h / 4, 0, this.h / 2); // Left curve back to tip
-            } else {
-                // A maple leaf shape
-                ctx.scale(this.w / 10, this.h / 10); 
-                ctx.moveTo(0, 8);
-                // stem
-                ctx.lineTo(0.5, 12);
-                ctx.lineTo(-0.5, 12);
-                ctx.lineTo(0, 8);
-                // right side
-                ctx.lineTo(2, 7);
-                ctx.lineTo(8, 8);
-                ctx.lineTo(6, 4);
-                ctx.lineTo(10, 2);
-                ctx.lineTo(6, 0);
-                ctx.lineTo(8, -4);
-                ctx.lineTo(3, -2);
-                ctx.lineTo(4, -7);
-                ctx.lineTo(1, -4);
-                // top tip
-                ctx.lineTo(0, -10);
-                // left side
-                ctx.lineTo(-1, -4);
-                ctx.lineTo(-4, -7);
-                ctx.lineTo(-3, -2);
-                ctx.lineTo(-8, -4);
-                ctx.lineTo(-6, 0);
-                ctx.lineTo(-10, 2);
-                ctx.lineTo(-6, 4);
-                ctx.lineTo(-8, 8);
-                ctx.lineTo(-2, 7);
-                ctx.lineTo(0, 8);
-            }
+            // A more realistic cherry blossom petal shape with a distinct tip
+            ctx.moveTo(0, this.h / 2); // Bottom tip
+            ctx.bezierCurveTo(this.w, this.h / 4, this.w / 1.5, -this.h / 2, 0, -this.h / 2.5); // Right curve with a cleft
+            ctx.bezierCurveTo(-this.w / 1.5, -this.h / 2, -this.w, this.h / 4, 0, this.h / 2); // Left curve back to tip
 
             ctx.fillStyle = `rgba(${this.color}, ${this.opacity})`;
             ctx.fill();
@@ -127,17 +74,20 @@
             if (this.y > height + this.h || this.x > width + this.w) {
                 this.x = Math.random() * width - width * 0.2; // Spawn slightly left to account for wind
                 this.y = -this.h;
-                this.setTheme(); // update theme on respawn in case it changed
             }
         }
     }
 
-    const petalCount = 60; // Adjust for density
+    // Fewer petals on mobile for better performance
+    const petalCount = window.innerWidth < 768 ? 15 : 35;
     for (let i = 0; i < petalCount; i++) {
         petals.push(new Petal());
     }
 
+    let animRunning = true;
+
     function animate() {
+        if (!animRunning) { requestAnimationFrame(animate); return; }
         ctx.clearRect(0, 0, width, height);
         petals.forEach(petal => {
             petal.update();
@@ -145,6 +95,11 @@
         });
         requestAnimationFrame(animate);
     }
+
+    // Pause animation when tab is hidden to save CPU/GPU
+    document.addEventListener('visibilitychange', () => {
+        animRunning = !document.hidden;
+    });
 
     animate();
 })();

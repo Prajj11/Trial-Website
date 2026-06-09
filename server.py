@@ -958,6 +958,196 @@ def anikoto_search_fast():
 
 
 # ============================================================
+# ANIMEPAHE PROXY ENDPOINTS (via local Node API)
+# ============================================================
+
+ANIMEPAHE_API_BASE = 'http://localhost:3000/api'
+
+@app.route('/api/animepahe/search', methods=['GET'])
+def animepahe_search():
+    """
+    Search AnimePahe for an anime.
+    Fuzzy matches the title.
+    """
+    q = request.args.get('q', '').strip()
+    mal_id = request.args.get('mal_id', '').strip()
+    if not q:
+        return jsonify({'ok': False, 'error': 'Missing query parameter q'}), 400
+
+    try:
+        # Query the local Node API
+        resp = requests.get(f'{ANIMEPAHE_API_BASE}/search', params={'q': q}, timeout=15)
+        if resp.status_code != 200:
+            return jsonify({'ok': False, 'error': f'Node API returned status {resp.status_code}'}), 502
+        
+        data = resp.json()
+        results = data.get('data', [])
+        
+        # Smart matching:
+        q_lower = q.lower().strip()
+        best_match = None
+        for anime in results:
+            a_title = (anime.get('title') or '').lower().strip()
+            if a_title == q_lower:
+                best_match = anime
+                break
+            if q_lower in a_title:
+                if not best_match:
+                    best_match = anime
+
+        if not best_match and results:
+            best_match = results[0]
+
+        if best_match:
+            return jsonify({'ok': True, 'match': best_match})
+        else:
+            return jsonify({'ok': False, 'error': 'No match found'})
+
+    except Exception as e:
+        print(f'[AnimePahe Proxy Search] Error: {e}')
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
+@app.route('/api/animepahe/episodes', methods=['GET'])
+def animepahe_episodes():
+    """
+    Fetches paginated episodes for an anime session ID.
+    """
+    session = request.args.get('session', '').strip()
+    page = request.args.get('page', '1').strip()
+    if not session:
+        return jsonify({'ok': False, 'error': 'Missing session parameter'}), 400
+
+    try:
+        resp = requests.get(f'{ANIMEPAHE_API_BASE}/{session}/releases', params={'page': page}, timeout=15)
+        if resp.status_code != 200:
+            return jsonify({'ok': False, 'error': f'Node API returned status {resp.status_code}'}), 502
+
+        return jsonify(resp.json())
+
+    except Exception as e:
+        print(f'[AnimePahe Proxy Episodes] Error: {e}')
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
+@app.route('/api/animepahe/stream', methods=['GET'])
+def animepahe_stream():
+    """
+    Resolves the streaming links for an episode.
+    Wraps the Kwik .m3u8 links in our local Flask HLS proxy.
+    """
+    anime_session = request.args.get('anime_session', '').strip()
+    ep_session = request.args.get('ep_session', '').strip()
+    if not anime_session or not ep_session:
+        return jsonify({'ok': False, 'error': 'Missing anime_session or ep_session parameter'}), 400
+
+    try:
+        resp = requests.get(
+            f'{ANIMEPAHE_API_BASE}/play/{anime_session}',
+            params={'episodeId': ep_session},
+            timeout=30
+        )
+        if resp.status_code != 200:
+            return jsonify({'ok': False, 'error': f'Node API returned status {resp.status_code}'}), 502
+
+        node_data = resp.json()
+        sources = node_data.get('sources', [])
+        
+        formatted_sources = []
+        for src in sources:
+            url = src.get('url', '')
+            quality = src.get('resolution', '720') + 'p'
+            is_m3u8 = src.get('isM3U8', True)
+            if url:
+                # Wrap the m3u8 in our Flask proxy to bypass Referer check
+                proxied_url = f'/api/animepahe/hls/manifest?url={requests.utils.quote(url)}'
+                formatted_sources.append({
+                    'url': proxied_url,
+                    'quality': quality,
+                    'isM3U8': is_m3u8
+                })
+
+        return jsonify({
+            'ok': True,
+            'sources': formatted_sources,
+            'referer': 'https://kwik.cx/'
+        })
+
+    except Exception as e:
+        print(f'[AnimePahe Proxy Stream] Error: {e}')
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
+@app.route('/api/animepahe/hls/manifest')
+def animepahe_hls_manifest():
+    """
+    Proxies the .m3u8 manifest file, rewriting relative segment URLs to go through our proxy.
+    """
+    from urllib.parse import urljoin
+    m3u8_url = request.args.get('url')
+    if not m3u8_url:
+        return 'Missing url', 400
+
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Referer': 'https://kwik.cx/'
+        }
+        resp = requests.get(m3u8_url, headers=headers, timeout=10)
+        if resp.status_code != 200:
+            return f'Failed to fetch manifest: {resp.status_code}', 502
+
+        content = resp.text
+        lines = content.split('\n')
+        for i, line in enumerate(lines):
+            line = line.strip()
+            if line and not line.startswith('#'):
+                resolved_url = urljoin(m3u8_url, line)
+                lines[i] = f'/api/animepahe/hls/segment?url={requests.utils.quote(resolved_url)}'
+
+        proxied_content = '\n'.join(lines)
+        
+        flask_resp = app.make_response(proxied_content)
+        flask_resp.headers['Content-Type'] = 'application/x-mpegURL'
+        flask_resp.headers['Access-Control-Allow-Origin'] = '*'
+        return flask_resp
+
+    except Exception as e:
+        return str(e), 500
+
+
+@app.route('/api/animepahe/hls/segment')
+def animepahe_hls_segment():
+    """
+    Proxies a video segment (.ts or other) attaching the required Referer header.
+    """
+    segment_url = request.args.get('url')
+    if not segment_url:
+        return 'Missing url', 400
+
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Referer': 'https://kwik.cx/'
+        }
+        resp = requests.get(segment_url, headers=headers, stream=True, timeout=15)
+        if resp.status_code != 200:
+            return f'Failed to fetch segment: {resp.status_code}', 502
+
+        def generate():
+            for chunk in resp.iter_content(chunk_size=8192):  # 8KB chunks for faster throughput
+                yield chunk
+
+        flask_resp = app.make_response(generate())
+        flask_resp.headers['Content-Type'] = resp.headers.get('Content-Type', 'video/MP2T')
+        flask_resp.headers['Access-Control-Allow-Origin'] = '*'
+        return flask_resp
+
+    except Exception as e:
+        return str(e), 500
+
+
+# ============================================================
 # STATIC FILE SERVING
 # ============================================================
 

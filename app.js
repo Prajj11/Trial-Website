@@ -75,10 +75,6 @@ const TRACKERS = [
 // we link users to Anikoto which provides the kwik-hosted downloads with a
 // proper UI, and also offer direct kwik.cx search fallbacks.
 
-function buildAnikotoSearchUrl(title) {
-  return 'https://anikototv.to/filter?keyword=' + encodeURIComponent(title);
-}
-
 function buildAnikotoUrl(title) {
   // Anikoto search page
   return 'https://anikototv.to/filter?keyword=' + encodeURIComponent(title);
@@ -382,8 +378,11 @@ function renderGrid(movies, containerId) {
 function renderTrending() {
   const el = document.getElementById('trending-strip');
   if (!el) return;
-  const trending = [...appState.movies].sort((a, b) => b.popularity - a.popularity).slice(0, 15);
-  el.innerHTML = trending.map(m => buildMovieCard(m)).join('');
+  // Use cached trending list if available (avoid re-sorting 19k records on every call)
+  if (!appState.trending) {
+    appState.trending = [...appState.movies].sort((a, b) => b.popularity - a.popularity).slice(0, 15);
+  }
+  el.innerHTML = appState.trending.map(m => buildMovieCard(m)).join('');
 }
 
 function renderWatchlistSection() {
@@ -529,6 +528,7 @@ function resetFilters() {
 function populateFilterDropdowns() {
   const genres = new Set();
   const langs = {};
+  // Single pass instead of two separate forEach calls
   appState.movies.forEach(m => {
     (m.genres || []).forEach(g => genres.add(g));
     langs[m.original_language] = (langs[m.original_language] || 0) + 1;
@@ -557,7 +557,16 @@ function populateFilterDropdowns() {
 // ============================================================
 // SEARCH SUGGESTIONS
 // ============================================================
-function handleSearchInput(e) {
+// Debounce helper — delays fn execution until typing stops for `delay` ms
+function debounce(fn, delay) {
+  let timer;
+  return function(...args) {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn.apply(this, args), delay);
+  };
+}
+
+const handleSearchInput = debounce(function(e) {
   const q = e.target.value.trim().toLowerCase();
   const clearBtn = document.getElementById('search-clear');
   const suggBox = document.getElementById('search-suggestions');
@@ -589,7 +598,7 @@ function handleSearchInput(e) {
     '</div>'
   ).join('');
   suggBox.style.display = 'block';
-}
+}, 250);
 
 // ============================================================
 // LANGUAGES SECTION
@@ -730,11 +739,12 @@ function openMovieModal(id) {
     const totalEps = parseInt(movie.episodes) || 0;
 
     // Reset anime streaming state for this new modal
-    activeAnimeSource = 'videasy';
+    activeAnimeSource = 'animepahe';
     currentAnimeMovieId = movie.id;
     activeAnimeAnilistId = null;
     anikotoState = { episodes: [], seriesId: null, currentEp: null, lang: 'sub' };
     jikanState = { episodes: [], malId: null, animeInfo: null, loaded: false };
+    animepaheState = { session: null, episodes: {}, loading: false };
 
     // Build the episode number grid (quick-click buttons)
     if (totalEps > 0) {
@@ -778,11 +788,12 @@ function closeMovieModal() {
   const animePlayer = document.getElementById('anime-player-container');
   if (animePlayer) animePlayer.innerHTML = '';
   activeStreamSource = null;
-  activeAnimeSource = 'videasy';
+  activeAnimeSource = 'animepahe';
   currentAnimeMovieId = null;
   activeAnimeAnilistId = null;
   anikotoState = { episodes: [], seriesId: null, currentEp: null, lang: 'sub' };
   jikanState = { episodes: [], malId: null, animeInfo: null, loaded: false };
+  animepaheState = { session: null, episodes: {}, loading: false };
 }
 
 // --- Active stream source tracker ---
@@ -952,9 +963,10 @@ function switchStreamSource(source, movieId) {
 // ANIKOTO ANIME STREAMING ENGINE
 // ============================================================
 let anikotoState = { episodes: [], seriesId: null, currentEp: null, lang: 'sub' };
-let activeAnimeSource = 'videasy'; // Track the active anime source
+let activeAnimeSource = 'animepahe'; // Track the active anime source
 let currentAnimeMovieId = null; // Track which anime is open
 let activeAnimeAnilistId = null; // AniList ID for Videasy
+let animepaheState = { session: null, episodes: {}, loading: false };
 
 // ============================================================
 // JIKAN (MyAnimeList) INTEGRATION
@@ -1094,7 +1106,8 @@ function buildAnimeStreamSection(movie) {
     '<div id="jikan-info-panel" style="display:none;gap:6px;flex-wrap:wrap;margin-bottom:14px;align-items:center;"></div>' +
     // Source selector buttons — reliable sources + direct HLS.js player
     '<div id="anime-source-buttons" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;">' +
-    '<button class="qbt-btn anime-src-btn active" data-source="videasy" style="flex:1;min-width:80px;padding:8px 12px;font-size:0.82rem;background:linear-gradient(135deg, #10b981, #059669);color:#fff;" onclick="switchAnimeSource(\'videasy\',' + movie.id + ')">▶ Videasy</button>' +
+    '<button class="qbt-btn anime-src-btn active" data-source="animepahe" style="flex:1;min-width:80px;padding:8px 12px;font-size:0.82rem;background:linear-gradient(135deg, #10b981, #059669);color:#fff;" onclick="switchAnimeSource(\'animepahe\',' + movie.id + ')">🌸 AnimePahe (Direct)</button>' +
+    '<button class="qbt-btn anime-src-btn" data-source="videasy" style="flex:1;min-width:80px;padding:8px 12px;font-size:0.82rem;background:var(--bg-card2);border:1px solid var(--border);color:var(--text-primary);" onclick="switchAnimeSource(\'videasy\',' + movie.id + ')">▶ Videasy</button>' +
     '<button class="qbt-btn anime-src-btn" data-source="direct" style="flex:1;min-width:80px;padding:8px 12px;font-size:0.82rem;background:var(--bg-card2);border:1px solid var(--border);color:var(--text-primary);" onclick="switchAnimeSource(\'direct\',' + movie.id + ')">🎬 Direct (HLS)</button>' +
     '<button class="qbt-btn anime-src-btn" data-source="anikoto" style="flex:1;min-width:80px;padding:8px 12px;font-size:0.82rem;background:var(--bg-card2);border:1px solid var(--border);color:var(--text-primary);" id="anikoto-src-btn" onclick="switchAnimeSource(\'anikoto\',' + movie.id + ')">▶ Anikoto</button>' +
     '</div>' +
@@ -1187,6 +1200,14 @@ function switchAnimeSource(source, movieId) {
     }
   });
 
+  // AnimePahe player
+  if (source === 'animepahe') {
+    const epSelect = document.getElementById('anime-ep-select');
+    const ep = epSelect ? parseInt(epSelect.value, 10) || 1 : 1;
+    playAnimepaheEpisode(movieId, ep);
+    return;
+  }
+
   // Direct HLS.js player
   if (source === 'direct') {
     playDirectHLS(movieId);
@@ -1229,9 +1250,15 @@ async function playAnimeEpisodeNow(movieId) {
   const movie = appState.movies.find(m => m.id == movieId);
   if (!movie) return;
 
-  const source = activeAnimeSource || 'videasy';
+  const source = activeAnimeSource || 'animepahe';
   const epSelect = document.getElementById('anime-ep-select');
   const ep = epSelect ? parseInt(epSelect.value, 10) || 1 : 1;
+
+  // AnimePahe player
+  if (source === 'animepahe') {
+    playAnimepaheEpisode(movieId, ep);
+    return;
+  }
 
   // Direct HLS player
   if (source === 'direct') {
@@ -1481,6 +1508,208 @@ function playAnimeViaFallback(source, movieId) {
 }
 
 // ============================================================
+// LAZY HLS.js LOADER — loads hls.js from CDN on first use only
+// ============================================================
+let _hlsJsLoading = false;
+let _hlsJsLoaded = typeof Hls !== 'undefined';
+
+function loadHlsJs() {
+  return new Promise((resolve, reject) => {
+    if (_hlsJsLoaded) { resolve(); return; }
+    if (_hlsJsLoading) {
+      // Already loading — poll until done
+      const poll = setInterval(() => {
+        if (typeof Hls !== 'undefined') { clearInterval(poll); _hlsJsLoaded = true; resolve(); }
+      }, 100);
+      return;
+    }
+    _hlsJsLoading = true;
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js';
+    s.onload = () => { _hlsJsLoaded = true; resolve(); };
+    s.onerror = reject;
+    document.head.appendChild(s);
+  });
+}
+
+// ============================================================
+// ANIMEPAHE DIRECT PLAYER (via Flask Manifest Proxy)
+// ============================================================
+async function playAnimepaheEpisode(movieId, ep) {
+  const movie = appState.movies.find(m => m.id == movieId);
+  if (!movie) return;
+
+  const container = document.getElementById('anime-player-container');
+  if (!container) return;
+
+  // Show loading
+  container.innerHTML =
+    '<div class="stream-loading-overlay" style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--text-muted);z-index:3;">' +
+    '<div class="loading-spinner" style="width:40px;height:40px;margin-bottom:10px;"></div>' +
+    '<span id="animepahe-loading-text" style="font-size:0.9rem;font-weight:600;">Connecting to AnimePahe...</span>' +
+    '<span style="font-size:0.78rem;opacity:0.6;margin-top:4px;">Preparing stream for Episode ' + ep + '</span>' +
+    '</div>';
+
+  const loadingText = document.getElementById('animepahe-loading-text');
+
+  // Step 1: Resolve AnimePahe session if not done yet
+  if (!animepaheState.session) {
+    if (loadingText) loadingText.textContent = 'Searching AnimePahe...';
+    try {
+      let malId = '';
+      if (movie.anime_link) {
+        const malMatch = movie.anime_link.match(/anime\/(\d+)/);
+        if (malMatch) malId = malMatch[1];
+      }
+      
+      const searchUrl = '/api/animepahe/search?q=' + encodeURIComponent(movie.title) + (malId ? '&mal_id=' + malId : '');
+      const res = await fetch(searchUrl);
+      const data = await res.json();
+      
+      if (!data.ok || !data.match) {
+        throw new Error('Not found in AnimePahe catalog');
+      }
+      
+      animepaheState.session = data.match.session;
+      console.log('[AnimePahe] Resolved anime session:', animepaheState.session);
+    } catch (err) {
+      console.error('[AnimePahe] Search failed:', err);
+      showToast('⚠️ AnimePahe search failed, falling back to Videasy...');
+      switchAnimeSource('videasy', movieId);
+      return;
+    }
+  }
+
+  // Step 2: Fetch the page of episodes containing the requested episode
+  const page = Math.floor((ep - 1) / 30) + 1;
+  if (!animepaheState.episodes[page]) {
+    if (loadingText) loadingText.textContent = 'Fetching episodes list (Page ' + page + ')...';
+    try {
+      const epUrl = '/api/animepahe/episodes?session=' + animepaheState.session + '&page=' + page;
+      const res = await fetch(epUrl);
+      const data = await res.json();
+      
+      if (!data || !data.data || !data.data.length) {
+        throw new Error('No episode data returned');
+      }
+      
+      animepaheState.episodes[page] = data.data;
+    } catch (err) {
+      console.error('[AnimePahe] Fetching episodes failed:', err);
+      showToast('⚠️ Failed to load episodes from AnimePahe, falling back to Videasy...');
+      switchAnimeSource('videasy', movieId);
+      return;
+    }
+  }
+
+  // Step 3: Find the specific episode session
+  const pageEps = animepaheState.episodes[page];
+  const matchedEp = pageEps.find(item => parseInt(item.episode) === ep);
+  if (!matchedEp || !matchedEp.session) {
+    console.warn('[AnimePahe] Episode ' + ep + ' not found in page data. Trying fallback...');
+    showToast('⚠️ Episode ' + ep + ' not found on AnimePahe, falling back to Videasy...');
+    switchAnimeSource('videasy', movieId);
+    return;
+  }
+
+  const epSession = matchedEp.session;
+
+  // Step 4: Resolve stream URLs (.m3u8 from Kwik via Flask proxy)
+  if (loadingText) loadingText.textContent = 'Resolving video stream...';
+  try {
+    const streamUrl = '/api/animepahe/stream?anime_session=' + animepaheState.session + '&ep_session=' + epSession;
+    const res = await fetch(streamUrl);
+    const data = await res.json();
+    
+    if (!data.ok || !data.sources || !data.sources.length) {
+      throw new Error('No stream sources found');
+    }
+    
+    // Pick the best source
+    const bestSource = data.sources[0];
+    const videoUrl = bestSource.url;
+    const isM3U8 = bestSource.isM3U8;
+
+    // Build native video player
+    container.innerHTML =
+      '<video id="hls-direct-video" style="width:100%;height:100%;background:#000;" controls autoplay playsinline></video>' +
+      '<div id="hls-quality-bar" style="position:absolute;bottom:0;left:0;right:0;padding:6px 12px;background:linear-gradient(transparent, rgba(0,0,0,0.8));display:flex;gap:6px;align-items:center;z-index:5;flex-wrap:wrap;"></div>';
+
+    const video = document.getElementById('hls-direct-video');
+    const qualityBar = document.getElementById('hls-quality-bar');
+
+    // Lazy-load HLS.js
+    await loadHlsJs();
+
+    if (isM3U8 && typeof Hls !== 'undefined' && Hls.isSupported()) {
+      const hls = new Hls({
+        maxBufferLength: 30,
+        maxMaxBufferLength: 60,
+        startLevel: -1,
+        capLevelToPlayerSize: true,
+        enableWorker: true,
+      });
+      _hlsInstance = hls;
+
+      hls.loadSource(videoUrl);
+      hls.attachMedia(video);
+
+      hls.on(Hls.Events.MANIFEST_PARSED, function(event, data) {
+        video.play().catch(e => console.log('[AnimePahe HLS] Autoplay blocked:', e));
+        
+        // Quality bar
+        if (qualityBar && data.levels.length > 1) {
+          let qHtml = '<span style="color:#aaa;font-size:0.72rem;font-weight:600;margin-right:4px;">Quality:</span>';
+          qHtml += '<button class="hls-q-btn" style="padding:3px 8px;font-size:0.72rem;border-radius:4px;border:1px solid rgba(255,255,255,0.2);background:rgba(139,92,246,0.6);color:#fff;cursor:pointer;" onclick="if(_hlsInstance)_hlsInstance.currentLevel=-1">AUTO</button>';
+          data.levels.forEach(function(level, idx) {
+            qHtml += '<button class="hls-q-btn" style="padding:3px 8px;font-size:0.72rem;border-radius:4px;border:1px solid rgba(255,255,255,0.2);background:rgba(255,255,255,0.1);color:#fff;cursor:pointer;" onclick="if(_hlsInstance)_hlsInstance.currentLevel=' + idx + '">' + level.height + 'p</button>';
+          });
+          qualityBar.innerHTML = qHtml;
+        } else if (qualityBar) {
+          qualityBar.style.display = 'none';
+        }
+      });
+
+      hls.on(Hls.Events.ERROR, function(event, data) {
+        console.error('[AnimePahe HLS] Error:', data.type, data.details);
+        if (data.fatal) {
+          switch (data.type) {
+            case Hls.ErrorTypes.NETWORK_ERROR:
+              hls.startLoad();
+              break;
+            case Hls.ErrorTypes.MEDIA_ERROR:
+              hls.recoverMediaError();
+              break;
+            default:
+              showToast('❌ AnimePahe stream failed, switching to Videasy...');
+              hls.destroy();
+              _hlsInstance = null;
+              switchAnimeSource('videasy', movieId);
+              break;
+          }
+        }
+      });
+
+    } else {
+      // Direct load
+      video.src = videoUrl;
+      video.play().catch(e => console.log('[AnimePahe Direct] Autoplay blocked:', e));
+      if (qualityBar) qualityBar.style.display = 'none';
+    }
+
+    // Update episode grid active state
+    updateEpGridActive(ep);
+    showToast('🌸 Playing Episode ' + ep + ' via AnimePahe — ' + bestSource.quality);
+    setTimeout(() => container.scrollIntoView({ behavior: 'smooth', block: 'center' }), 200);
+
+  } catch (err) {
+    console.error('[AnimePahe] Stream failed:', err);
+    showToast('⚠️ AnimePahe playback error, falling back to Videasy...');
+    switchAnimeSource('videasy', movieId);
+  }
+}
+
+// ============================================================
 // DIRECT HLS.js PLAYER — plays .m3u8 streams without iframes
 // ============================================================
 async function playDirectHLS(movieId) {
@@ -1561,6 +1790,9 @@ async function playDirectHLS(movieId) {
 
     const video = document.getElementById('hls-direct-video');
     const qualityBar = document.getElementById('hls-quality-bar');
+
+    // Lazy-load HLS.js if not yet loaded
+    await loadHlsJs();
 
     if (isM3U8 && typeof Hls !== 'undefined' && Hls.isSupported()) {
       // Use HLS.js to play .m3u8
