@@ -2084,3 +2084,34 @@ input, select {
     grid-template-columns: repeat(auto-fill, minmax(50px, 1fr)) !important;
   }
 }
+
+.ep-action-group {
+  display: flex;
+  gap: 4px;
+  width: 100%;
+}
+
+.ep-action-group .kwik-ep-btn {
+  flex: 1;
+  padding: 8px 4px;
+}
+
+.kwik-ep-play-btn {
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #8b5cf6, #6d28d9);
+  border: none;
+  color: #fff;
+  font-size: 0.82rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.kwik-ep-play-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(139, 92, 246, 0.4);
+}

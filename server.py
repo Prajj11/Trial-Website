@@ -19,9 +19,13 @@ Also serves static files (HTML, CSS, JS) from the same directory.
 """
 
 import os
+import sys
 import sqlite3
 import json
 import time
+import subprocess
+import atexit
+import threading
 import requests
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
@@ -33,6 +37,11 @@ PORT = 8090
 
 app = Flask(__name__, static_folder=BASE_DIR)
 CORS(app)
+
+import sys, os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'api'))
+from torrent import torrent_bp
+app.register_blueprint(torrent_bp)
 
 
 # --- Database helpers ---
@@ -962,6 +971,35 @@ def anikoto_search_fast():
 # ============================================================
 
 ANIMEPAHE_API_BASE = 'http://localhost:3000/api'
+_animepahe_node_ok = None  # Cached availability flag
+_animepahe_node_last_check = 0
+_ANIMEPAHE_NODE_CHECK_TTL = 30  # Re-check every 30 seconds
+
+
+def _animepahe_node_available():
+    """Quick ping to check if the AnimePahe Node API is up. Cached for 30s."""
+    global _animepahe_node_ok, _animepahe_node_last_check
+    now = time.time()
+    if now - _animepahe_node_last_check < _ANIMEPAHE_NODE_CHECK_TTL:
+        return _animepahe_node_ok
+    try:
+        # Just ping root — fast 1.5s timeout
+        r = requests.get('http://localhost:3000/', timeout=1.5)
+        _animepahe_node_ok = True  # Even 404 means server is up
+    except Exception:
+        _animepahe_node_ok = False
+    _animepahe_node_last_check = now
+    return _animepahe_node_ok
+
+
+@app.route('/api/animepahe/status', methods=['GET'])
+def animepahe_status():
+    """Check if the AnimePahe Node API is running."""
+    global _animepahe_node_last_check
+    _animepahe_node_last_check = 0  # Force re-check
+    available = _animepahe_node_available()
+    return jsonify({'ok': available, 'node_api': 'http://localhost:3000', 'message': 'AnimePahe Node API is ' + ('running' if available else 'not running')})
+
 
 @app.route('/api/animepahe/search', methods=['GET'])
 def animepahe_search():
@@ -974,9 +1012,13 @@ def animepahe_search():
     if not q:
         return jsonify({'ok': False, 'error': 'Missing query parameter q'}), 400
 
+    # Fast-fail if Node API isn't running
+    if not _animepahe_node_available():
+        return jsonify({'ok': False, 'error': 'AnimePahe Node API is not running. Start it with: cd animepahe-api--main && node app.js'}), 503
+
     try:
-        # Query the local Node API
-        resp = requests.get(f'{ANIMEPAHE_API_BASE}/search', params={'q': q}, timeout=15)
+        # Query the local Node API — fast timeout so fallback to Videasy is instant
+        resp = requests.get(f'{ANIMEPAHE_API_BASE}/search', params={'q': q}, timeout=6)
         if resp.status_code != 200:
             return jsonify({'ok': False, 'error': f'Node API returned status {resp.status_code}'}), 502
         
@@ -1018,8 +1060,13 @@ def animepahe_episodes():
     if not session:
         return jsonify({'ok': False, 'error': 'Missing session parameter'}), 400
 
+    # Fast-fail if Node API isn't running
+    if not _animepahe_node_available():
+        return jsonify({'ok': False, 'error': 'AnimePahe Node API is not running'}), 503
+
     try:
-        resp = requests.get(f'{ANIMEPAHE_API_BASE}/{session}/releases', params={'page': page}, timeout=15)
+        # The Node API route for episodes is /:id/releases (fast timeout for quick fallback)
+        resp = requests.get(f'{ANIMEPAHE_API_BASE}/{session}/releases', params={'page': page}, timeout=6)
         if resp.status_code != 200:
             return jsonify({'ok': False, 'error': f'Node API returned status {resp.status_code}'}), 502
 
@@ -1041,11 +1088,15 @@ def animepahe_stream():
     if not anime_session or not ep_session:
         return jsonify({'ok': False, 'error': 'Missing anime_session or ep_session parameter'}), 400
 
+    # Fast-fail if Node API isn't running
+    if not _animepahe_node_available():
+        return jsonify({'ok': False, 'error': 'AnimePahe Node API is not running'}), 503
+
     try:
         resp = requests.get(
             f'{ANIMEPAHE_API_BASE}/play/{anime_session}',
             params={'episodeId': ep_session},
-            timeout=30
+            timeout=10
         )
         if resp.status_code != 200:
             return jsonify({'ok': False, 'error': f'Node API returned status {resp.status_code}'}), 502
@@ -1147,6 +1198,117 @@ def animepahe_hls_segment():
         return str(e), 500
 
 
+
+# ============================================================
+# TORRENT STREAM PROXY (forwards to Node.js WebTorrent server on :9411)
+# ============================================================
+
+TORRENT_STREAM_BASE = 'http://localhost:9411'
+
+def _torrent_server_available():
+    """Quick check if the torrent stream server (Node) is up."""
+    try:
+        r = requests.get(f'{TORRENT_STREAM_BASE}/health', timeout=2)
+        return r.status_code == 200
+    except Exception:
+        return False
+
+
+@app.route('/api/torrent-stream/start', methods=['POST'])
+def torrent_stream_start():
+    """
+    Start streaming a magnet link via the Node WebTorrent server.
+    Body JSON: { magnet: '...' }
+    Returns: { ok, streamUrl, fileName, fileSize, infoHash }
+    """
+    if not _torrent_server_available():
+        return jsonify({
+            'ok': False,
+            'error': 'Torrent stream server not running. Start it with: node torrent-stream-server.js'
+        }), 503
+
+    body = request.get_json(silent=True) or {}
+    magnet = body.get('magnet', '').strip()
+    if not magnet:
+        return jsonify({'ok': False, 'error': 'Missing magnet link'}), 400
+
+    try:
+        resp = requests.post(
+            f'{TORRENT_STREAM_BASE}/stream',
+            json={'magnet': magnet},
+            timeout=30
+        )
+        data = resp.json()
+        # Rewrite the streamUrl to go through Flask so browser stays on port 8090
+        if data.get('ok') and data.get('infoHash') and data.get('fileName'):
+            ih = data['infoHash']
+            fn = requests.utils.quote(data['fileName'], safe='')
+            data['streamUrl'] = f'/api/torrent-stream/play/{ih}/{fn}'
+        return jsonify(data)
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
+@app.route('/api/torrent-stream/status/<info_hash>', methods=['GET'])
+def torrent_stream_status(info_hash):
+    """Proxy torrent progress status from Node server."""
+    try:
+        resp = requests.get(f'{TORRENT_STREAM_BASE}/status/{info_hash}', timeout=5)
+        return jsonify(resp.json())
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
+@app.route('/api/torrent-stream/stop/<info_hash>', methods=['DELETE'])
+def torrent_stream_stop(info_hash):
+    """Tell the Node server to destroy the torrent and free memory."""
+    try:
+        resp = requests.delete(f'{TORRENT_STREAM_BASE}/stream/{info_hash}', timeout=5)
+        return jsonify(resp.json())
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
+@app.route('/api/torrent-stream/play/<info_hash>/<path:filename>')
+def torrent_stream_play(info_hash, filename):
+    """
+    HTTP-range proxy: forwards video byte ranges from the Node WebTorrent
+    server to the browser so the HTML5 <video> player can seek freely.
+    """
+    node_url = f'{TORRENT_STREAM_BASE}/stream/{info_hash}/{requests.utils.quote(filename, safe="")}'
+    headers = {}
+    if 'Range' in request.headers:
+        headers['Range'] = request.headers['Range']
+
+    try:
+        resp = requests.get(node_url, headers=headers, stream=True, timeout=60)
+        status = resp.status_code  # 206 or 200
+
+        forward_headers = {
+            'Content-Type': resp.headers.get('Content-Type', 'video/mp4'),
+            'Accept-Ranges': 'bytes',
+            'Access-Control-Allow-Origin': '*',
+        }
+        if 'Content-Range' in resp.headers:
+            forward_headers['Content-Range'] = resp.headers['Content-Range']
+        if 'Content-Length' in resp.headers:
+            forward_headers['Content-Length'] = resp.headers['Content-Length']
+
+        def generate():
+            for chunk in resp.iter_content(chunk_size=65536):
+                if chunk:
+                    yield chunk
+
+        flask_resp = app.make_response(generate())
+        flask_resp.status_code = status
+        for k, v in forward_headers.items():
+            flask_resp.headers[k] = v
+        return flask_resp
+
+    except Exception as e:
+        return str(e), 502
+
+
 # ============================================================
 # STATIC FILE SERVING
 # ============================================================
@@ -1165,6 +1327,79 @@ def serve_static(filename):
 # MAIN
 # ============================================================
 
+# ── Torrent Stream Server (Node.js) auto-launcher ─────────────────────────────
+_torrent_proc = None
+
+def _start_torrent_server():
+    """
+    Starts the Node.js WebTorrent stream server as a child process.
+    Killed automatically when Flask exits (via atexit).
+    """
+    global _torrent_proc
+
+    node_server = os.path.join(BASE_DIR, 'animepahe-api--main', 'torrent-stream-server.js')
+    node_cwd    = os.path.join(BASE_DIR, 'animepahe-api--main')
+
+    if not os.path.exists(node_server):
+        print("[TorrentLauncher] torrent-stream-server.js not found — skipping.")
+        return
+
+    # Find node executable
+    node_exe = 'node'
+    try:
+        subprocess.run([node_exe, '--version'], capture_output=True, check=True)
+    except Exception:
+        print("[TorrentLauncher] 'node' not found in PATH — torrent streaming disabled.")
+        return
+
+    # Check if port 9411 is already in use (server already running)
+    try:
+        r = requests.get('http://localhost:9411/health', timeout=1)
+        if r.status_code == 200:
+            print("[TorrentLauncher] Torrent server already running on :9411")
+            return
+    except Exception:
+        pass  # Not running yet — start it
+
+    print("[TorrentLauncher] Starting Node.js torrent stream server on :9411 ...")
+    try:
+        _torrent_proc = subprocess.Popen(
+            [node_exe, 'torrent-stream-server.js'],
+            cwd=node_cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+
+        # Stream Node output to console in a background thread
+        def _pipe_output(proc):
+            try:
+                for line in proc.stdout:
+                    print(f"[TorrentServer] {line}", end='')
+            except Exception:
+                pass
+
+        t = threading.Thread(target=_pipe_output, args=(_torrent_proc,), daemon=True)
+        t.start()
+
+        # Register cleanup
+        def _kill_torrent():
+            if _torrent_proc and _torrent_proc.poll() is None:
+                print("\n[TorrentLauncher] Shutting down torrent server...")
+                _torrent_proc.terminate()
+                try:
+                    _torrent_proc.wait(timeout=4)
+                except subprocess.TimeoutExpired:
+                    _torrent_proc.kill()
+        atexit.register(_kill_torrent)
+
+        print("[TorrentLauncher] Torrent server started (PID %d)" % _torrent_proc.pid)
+
+    except Exception as e:
+        print(f"[TorrentLauncher] Failed to start torrent server: {e}")
+
+
 if __name__ == '__main__':
     if not os.path.exists(DB_PATH):
         print("[Error] Database not found! Run 'python init_db.py' first.")
@@ -1177,5 +1412,10 @@ if __name__ == '__main__':
     print(f"   URL: http://localhost:{PORT}")
     print(f"   API: http://localhost:{PORT}/api/movies")
     print("=" * 50)
+
+    # Auto-start the Node.js WebTorrent stream server
+    # (skipped when Flask reloader forks a child — only runs once in the main process)
+    if os.environ.get('WERKZEUG_RUN_MAIN') != 'true':
+        _start_torrent_server()
 
     app.run(host='0.0.0.0', port=PORT, debug=True)

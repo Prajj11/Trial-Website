@@ -107,10 +107,10 @@ function renderEpisodeDownloadGrid(movieId, startEp, endEp) {
 
   let html = '';
   for (let ep = startEp; ep <= endEp; ep++) {
-    html += '<button class="kwik-ep-btn" onclick="downloadAnimeEpisode(' + movieId + ',' + ep + ')">' +
-      '<span class="kwik-ep-num">Ep ' + ep + '</span>' +
-      '<span class="kwik-ep-icon">⬇</span>' +
-      '</button>';
+    html += '<div class="ep-action-group" style="display:flex;gap:4px;margin-bottom:4px;">' +
+      '<button class="kwik-ep-btn" onclick="downloadAnimeEpisode(' + movieId + ',' + ep + ')"><span class="kwik-ep-num">Ep ' + ep + '</span><span class="kwik-ep-icon">⬇</span></button>' +
+      '<button class="kwik-ep-play-btn" onclick="playTorrentEpisode(' + movieId + ',' + ep + ')"><span class="kwik-ep-num">▶ ' + ep + '</span></button>' +
+      '</div>';
   }
   container.innerHTML = html;
 }
@@ -560,13 +560,13 @@ function populateFilterDropdowns() {
 // Debounce helper — delays fn execution until typing stops for `delay` ms
 function debounce(fn, delay) {
   let timer;
-  return function(...args) {
+  return function (...args) {
     clearTimeout(timer);
     timer = setTimeout(() => fn.apply(this, args), delay);
   };
 }
 
-const handleSearchInput = debounce(function(e) {
+const handleSearchInput = debounce(function (e) {
   const q = e.target.value.trim().toLowerCase();
   const clearBtn = document.getElementById('search-clear');
   const suggBox = document.getElementById('search-suggestions');
@@ -780,9 +780,10 @@ function closeMovieModal() {
   const modal = document.getElementById('modal-overlay');
   modal.style.display = 'none';
   document.body.style.overflow = '';
-  // Cleanly destroy all active players
+  // Cleanly destroy all active players and torrent client
   _destroyCurrentPlayer('player-container');
   _destroyCurrentPlayer('anime-player-container');
+  if (_torrentClient) { _torrentClient.destroy(); _torrentClient = null; }
   const player = document.getElementById('player-container');
   if (player) player.innerHTML = '';
   const animePlayer = document.getElementById('anime-player-container');
@@ -798,6 +799,7 @@ function closeMovieModal() {
 
 // --- Active stream source tracker ---
 let activeStreamSource = null;
+let _torrentClient = null; // Holds current WebTorrent client
 let _iframeLoadTimer = null; // Tracks iframe load timeout for auto-fallback
 let _hlsInstance = null; // HLS.js instance for direct player
 
@@ -809,13 +811,13 @@ function _destroyCurrentPlayer(containerId) {
   const container = document.getElementById(containerId);
   if (!container) return;
   // Kill any active HLS instance
-  if (_hlsInstance) { try { _hlsInstance.destroy(); } catch(e) {} _hlsInstance = null; }
+  if (_hlsInstance) { try { _hlsInstance.destroy(); } catch (e) { } _hlsInstance = null; }
   // Blank out iframe src before removing to stop network requests
   const iframe = container.querySelector('iframe');
-  if (iframe) { try { iframe.src = 'about:blank'; } catch(e) {} }
+  if (iframe) { try { iframe.src = 'about:blank'; } catch (e) { } }
   // Kill any running video element
   const video = container.querySelector('video');
-  if (video) { try { video.pause(); video.src = ''; video.load(); } catch(e) {} }
+  if (video) { try { video.pause(); video.src = ''; video.load(); } catch (e) { } }
   // Clear load timer
   if (_iframeLoadTimer) { clearTimeout(_iframeLoadTimer); _iframeLoadTimer = null; }
 }
@@ -837,7 +839,7 @@ function _injectIframeWithTimeout(container, streamUrl, displayLabel, fallbackFn
 
   // Hide loading spinner once iframe loads
   if (iframe) {
-    iframe.addEventListener('load', function() {
+    iframe.addEventListener('load', function () {
       const overlay = container.querySelector('.stream-loading-overlay');
       if (overlay) overlay.style.display = 'none';
       if (_iframeLoadTimer) { clearTimeout(_iframeLoadTimer); _iframeLoadTimer = null; }
@@ -846,7 +848,7 @@ function _injectIframeWithTimeout(container, streamUrl, displayLabel, fallbackFn
 
   // Auto-fallback: if iframe hasn't loaded in 12 seconds, try next source
   if (fallbackFn) {
-    _iframeLoadTimer = setTimeout(function() {
+    _iframeLoadTimer = setTimeout(function () {
       console.warn('[Stream] Iframe load timeout for ' + displayLabel + ', trying fallback...');
       fallbackFn();
     }, 12000);
@@ -944,7 +946,7 @@ function switchStreamSource(source, movieId) {
   // Build fallback function: try next source in priority list
   const priorities = isAnime ? ANIME_SOURCE_PRIORITY : MOVIE_SOURCE_PRIORITY;
   const currentIdx = priorities.indexOf(source);
-  const fallbackFn = (currentIdx >= 0 && currentIdx < priorities.length - 1) ? function() {
+  const fallbackFn = (currentIdx >= 0 && currentIdx < priorities.length - 1) ? function () {
     const nextSource = priorities[currentIdx + 1];
     showToast('⏳ ' + source + ' timed out, trying ' + nextSource + '...');
     switchStreamSource(nextSource, movieId);
@@ -1038,7 +1040,7 @@ function renderJikanInfoBadge(info) {
   }
   // Streaming links from MAL
   if (info.streaming && info.streaming.length) {
-    info.streaming.forEach(function(s) {
+    info.streaming.forEach(function (s) {
       html += '<a href="' + s.url + '" target="_blank" rel="noopener" class="modal-badge mb-lang" style="text-decoration:none;cursor:pointer;" onclick="showToast(\'Opening ' + escapeHtml(s.name) + '...\')">' + escapeHtml(s.name) + ' \u2197</a>';
     });
   }
@@ -1051,9 +1053,9 @@ function enrichEpisodeGridWithJikan() {
   if (!jikanState.loaded || !jikanState.episodes.length) return;
 
   // Enrich the episode grid buttons with titles
-  document.querySelectorAll('.anime-ep-grid-btn').forEach(function(btn) {
+  document.querySelectorAll('.anime-ep-grid-btn').forEach(function (btn) {
     var epNum = parseInt(btn.dataset.ep);
-    var jikanEp = jikanState.episodes.find(function(e) { return e.number === epNum; });
+    var jikanEp = jikanState.episodes.find(function (e) { return e.number === epNum; });
     if (jikanEp && jikanEp.title) {
       btn.title = 'Ep ' + epNum + ': ' + jikanEp.title + (jikanEp.filler ? ' [FILLER]' : '') + (jikanEp.recap ? ' [RECAP]' : '');
       // Add filler/recap visual indicator
@@ -1069,9 +1071,9 @@ function enrichEpisodeGridWithJikan() {
   // Also enrich the episode dropdown with titles
   var select = document.getElementById('anime-ep-select');
   if (select) {
-    Array.from(select.options).forEach(function(opt) {
+    Array.from(select.options).forEach(function (opt) {
       var epNum = parseInt(opt.value);
-      var jikanEp = jikanState.episodes.find(function(e) { return e.number === epNum; });
+      var jikanEp = jikanState.episodes.find(function (e) { return e.number === epNum; });
       if (jikanEp && jikanEp.title) {
         var label = 'Episode ' + epNum + ' \u2014 ' + jikanEp.title;
         if (jikanEp.filler) label += ' \u26a0\ufe0fFILLER';
@@ -1136,8 +1138,6 @@ function buildAnimeStreamSection(movie) {
 }
 
 // Resolve AniList ID and auto-play episode 1 when modal opens
-// NON-BLOCKING: starts playback immediately with best available source,
-// then resolves AniList ID in background for future episode switches.
 async function resolveAnilistAndAutoplay(movie) {
   const statusEl = document.getElementById('anime-player-status');
 
@@ -1177,13 +1177,191 @@ async function resolveAnilistAndAutoplay(movie) {
   }
 }
 
+async function searchNyaa(title, episode) {
+  try {
+    const url = `/api/nyaa/search?q=${encodeURIComponent(title)}&ep=${episode}`;
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (data.ok && data.results && data.results.length > 0) {
+      return data.results[0].magnet;
+    }
+    return null;
+  } catch (e) {
+    console.error('Nyaa search error', e);
+    return null;
+  }
+}
+
+async function search1337x(title, episode) {
+  try {
+    const url = `/api/1337x/search?q=${encodeURIComponent(title)}&ep=${episode}`;
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (data.ok && data.results && data.results.length > 0) {
+      return data.results[0].magnet;
+    }
+    return null;
+  } catch (e) {
+    console.error('1337x search error', e);
+    return null;
+  }
+}
+
+/**
+ * streamMagnet — Backend-based torrent HTTP streaming
+ * =====================================================
+ * Sends the magnet link to the Flask /api/torrent-stream/start endpoint,
+ * which forwards it to our Node.js WebTorrent server (port 9411).
+ * The Node server downloads pieces over real UDP/TCP and exposes the
+ * video file as a range-capable HTTP stream that the browser <video> can play.
+ */
+let _activeTorrentInfoHash = null;
+let _torrentStatusInterval = null;
+
+async function streamMagnet(magnet, containerId) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+
+  // Cancel any existing torrent
+  if (_activeTorrentInfoHash) {
+    fetch('/api/torrent-stream/stop/' + _activeTorrentInfoHash, { method: 'DELETE' }).catch(() => {});
+    clearInterval(_torrentStatusInterval);
+    _activeTorrentInfoHash = null;
+  }
+
+  // Loading UI with spinner + status bar
+  container.innerHTML =
+    '<div id="torrent-loading-wrap" style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--text-muted);gap:12px;z-index:5;">' +
+    '<div class="loading-spinner" style="width:48px;height:48px;border:3px solid rgba(139,92,246,0.3);border-top-color:#8b5cf6;border-radius:50%;animation:spin 0.8s linear infinite;"></div>' +
+    '<span id="ts-status-line" style="font-size:0.92rem;font-weight:600;color:var(--text-primary);">🔗 Connecting to torrent network...</span>' +
+    '<div id="ts-progress-bar-wrap" style="width:min(340px,90%);background:rgba(255,255,255,0.08);border-radius:999px;height:6px;overflow:hidden;display:none;">' +
+    '  <div id="ts-progress-fill" style="height:100%;width:0%;background:linear-gradient(90deg,#8b5cf6,#a78bfa);border-radius:999px;transition:width 0.4s;"></div>' +
+    '</div>' +
+    '<span id="ts-peers-line" style="font-size:0.78rem;opacity:0.6;"></span>' +
+    '</div>';
+
+  const statusLine = () => document.getElementById('ts-status-line');
+  const peersLine = () => document.getElementById('ts-peers-line');
+  const fillEl = () => document.getElementById('ts-progress-fill');
+  const barWrap = () => document.getElementById('ts-progress-bar-wrap');
+
+  try {
+    // Ask Flask to start the torrent in the Node.js backend
+    const res = await fetch('/api/torrent-stream/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ magnet })
+    });
+    const data = await res.json();
+
+    if (!data.ok) {
+      // Torrent server not running or failed
+      const errMsg = data.error || 'Failed to start torrent stream';
+      const isNotRunning = errMsg.includes('not running') || res.status === 503;
+      container.innerHTML =
+        '<div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--text-muted);gap:12px;text-align:center;padding:24px;">' +
+        '<span style="font-size:2.5rem;">🖥️</span>' +
+        '<span style="font-weight:700;font-size:1rem;color:var(--text-primary);">' + (isNotRunning ? 'Start the Torrent Server' : 'Stream Error') + '</span>' +
+        '<span style="font-size:0.82rem;max-width:320px;">' + escapeHtml(errMsg) + '</span>' +
+        (isNotRunning ? '<code style="font-size:0.78rem;background:rgba(0,0,0,0.3);padding:6px 12px;border-radius:6px;color:#a78bfa;">node torrent-stream-server.js</code>' : '') +
+        '<span style="font-size:0.76rem;opacity:0.6;">Run the above command in a separate terminal, then retry.</span>' +
+        '</div>';
+      return;
+    }
+
+    _activeTorrentInfoHash = data.infoHash;
+    const streamUrl = data.streamUrl; // Flask proxy URL e.g. /api/torrent-stream/play/abc123/file.mp4
+
+    // Build the video player immediately — streaming works even with 0% progress
+    container.innerHTML =
+      '<video id="torrent-video-player" style="width:100%;height:100%;background:#000;" controls autoplay playsinline>' +
+      '  <source src="' + streamUrl + '" type="video/mp4">' +
+      '  Your browser does not support video playback.' +
+      '</video>' +
+      '<div id="torrent-hud" style="position:absolute;top:8px;right:8px;background:rgba(0,0,0,0.65);color:#a78bfa;padding:4px 10px;border-radius:6px;font-size:0.72rem;font-weight:600;pointer-events:none;z-index:5;">⬇ 0% · 0 peers</div>';
+
+    const video = document.getElementById('torrent-video-player');
+    const hud = document.getElementById('torrent-hud');
+
+    video.addEventListener('canplay', () => {
+      showToast('▶ Streaming anime via torrent backend!');
+    });
+    video.addEventListener('error', (e) => {
+      console.error('[TorrentStream] Video error:', e);
+      showToast('⚠️ Playback error — stream may not have enough data yet. Please wait a moment and retry.');
+    });
+
+    // Poll progress every 2 seconds and update HUD
+    _torrentStatusInterval = setInterval(async () => {
+      if (!_activeTorrentInfoHash) { clearInterval(_torrentStatusInterval); return; }
+      try {
+        const sr = await fetch('/api/torrent-stream/status/' + _activeTorrentInfoHash);
+        const sd = await sr.json();
+        if (sd.ok && hud) {
+          const pct = sd.progress || 0;
+          const peers = sd.numPeers || 0;
+          const speed = sd.downloadSpeed ? (sd.downloadSpeed / 1024).toFixed(0) + ' KB/s' : '';
+          hud.textContent = '⬇ ' + pct.toFixed(1) + '% · ' + peers + ' peers' + (speed ? ' · ' + speed : '');
+          if (pct >= 100) {
+            hud.textContent = '✅ 100% downloaded';
+            setTimeout(() => { if (hud) hud.style.display = 'none'; }, 4000);
+            clearInterval(_torrentStatusInterval);
+          }
+        }
+      } catch (e) { /* ignore status poll errors */ }
+    }, 2000);
+
+  } catch (err) {
+    console.error('[TorrentStream] Fatal error:', err);
+    container.innerHTML =
+      '<div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--text-muted);gap:10px;">' +
+      '<span style="font-size:2rem;">❌</span>' +
+      '<span style="font-weight:600;">' + escapeHtml(err.message) + '</span>' +
+      '<span style="font-size:0.78rem;opacity:0.6;">Make sure <code>node torrent-stream-server.js</code> is running</span>' +
+      '</div>';
+  }
+}
+
+async function playTorrentEpisode(movieId, ep) {
+  const movie = appState.movies.find(m => m.id == movieId);
+  if (!movie) return;
+  const title = movie.title;
+
+  // Scroll to player
+  const container = document.getElementById('anime-player-container');
+  if (container) setTimeout(() => container.scrollIntoView({ behavior: 'smooth', block: 'center' }), 100);
+
+  showToast('🔎 Searching Nyaa for "' + title + '" episode ' + ep + '...');
+  let magnet = await searchNyaa(title, ep);
+  if (!magnet) {
+    showToast('🔎 Nyaa not found, trying 1337x...');
+    magnet = await search1337x(title, ep);
+  }
+  if (!magnet) {
+    showToast('❌ No torrent found for episode ' + ep);
+    if (container) {
+      container.innerHTML =
+        '<div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--text-muted);gap:10px;">' +
+        '<span style="font-size:2.5rem;">🔍</span>' +
+        '<span style="font-weight:700;font-size:0.95rem;color:var(--text-primary);">No torrent found for Episode ' + ep + '</span>' +
+        '<span style="font-size:0.8rem;max-width:300px;text-align:center;">Could not find "' + escapeHtml(title) + '" Episode ' + ep + ' on Nyaa or 1337x. Try another episode or use AnimePahe/Videasy.</span>' +
+        '</div>';
+    }
+    return;
+  }
+  await streamMagnet(magnet, 'anime-player-container');
+}
+
 // Switch source for anime streaming
 function switchAnimeSource(source, movieId) {
   activeAnimeSource = source;
   currentAnimeMovieId = movieId;
 
-  // Destroy current player before switching
+  // Destroy current player and any torrent before switching
   _destroyCurrentPlayer('anime-player-container');
+  if (_torrentClient) { _torrentClient.destroy(); _torrentClient = null; }
 
   // Update button active states
   document.querySelectorAll('.anime-src-btn').forEach(btn => {
@@ -1293,7 +1471,7 @@ async function playAnimeEpisodeNow(movieId) {
   // Build auto-fallback: try next source if iframe doesn't load
   const animeSources = ['videasy', 'vidsrc', 'embed'];
   const srcIdx = animeSources.indexOf(source);
-  const fallbackFn = (srcIdx >= 0 && srcIdx < animeSources.length - 1) ? function() {
+  const fallbackFn = (srcIdx >= 0 && srcIdx < animeSources.length - 1) ? function () {
     const nextSrc = animeSources[srcIdx + 1];
     showToast('⏳ ' + displaySource + ' timed out, trying ' + nextSrc + '...');
     activeAnimeSource = nextSrc;
@@ -1413,7 +1591,7 @@ function playAnikotoEpisode(embedId) {
   const container = document.getElementById('anime-player-container');
   if (!container) return;
 
-  _injectIframeWithTimeout(container, embedUrl, 'Episode ' + ep.number + ' (' + lang.toUpperCase() + ')', function() {
+  _injectIframeWithTimeout(container, embedUrl, 'Episode ' + ep.number + ' (' + lang.toUpperCase() + ')', function () {
     // Fallback: switch to videasy if Anikoto embed fails
     showToast('⏳ Anikoto timed out, switching to Videasy...');
     switchAnimeSource('videasy', currentAnimeMovieId);
@@ -1510,6 +1688,7 @@ function playAnimeViaFallback(source, movieId) {
 // ============================================================
 // LAZY HLS.js LOADER — loads hls.js from CDN on first use only
 // ============================================================
+// Load HLS.js lazily
 let _hlsJsLoading = false;
 let _hlsJsLoaded = typeof Hls !== 'undefined';
 
@@ -1527,6 +1706,30 @@ function loadHlsJs() {
     const s = document.createElement('script');
     s.src = 'https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js';
     s.onload = () => { _hlsJsLoaded = true; resolve(); };
+    s.onerror = reject;
+    document.head.appendChild(s);
+  });
+}
+
+// ============================================================
+// LAZY WEBTORRENT LOADER — loads webtorrent.min.js from CDN on first use
+// ============================================================
+let _webtorrentLoading = false;
+let _webtorrentLoaded = typeof WebTorrent !== 'undefined';
+
+function loadWebTorrent() {
+  return new Promise((resolve, reject) => {
+    if (_webtorrentLoaded || window.WebTorrent) { _webtorrentLoaded = true; resolve(); return; }
+    if (_webtorrentLoading) {
+      const poll = setInterval(() => {
+        if (typeof WebTorrent !== 'undefined') { clearInterval(poll); _webtorrentLoaded = true; resolve(); }
+      }, 100);
+      return;
+    }
+    _webtorrentLoading = true;
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/webtorrent@latest/webtorrent.min.js';
+    s.onload = () => { _webtorrentLoaded = true; resolve(); };
     s.onerror = reject;
     document.head.appendChild(s);
   });
@@ -1561,15 +1764,15 @@ async function playAnimepaheEpisode(movieId, ep) {
         const malMatch = movie.anime_link.match(/anime\/(\d+)/);
         if (malMatch) malId = malMatch[1];
       }
-      
+
       const searchUrl = '/api/animepahe/search?q=' + encodeURIComponent(movie.title) + (malId ? '&mal_id=' + malId : '');
       const res = await fetch(searchUrl);
       const data = await res.json();
-      
+
       if (!data.ok || !data.match) {
         throw new Error('Not found in AnimePahe catalog');
       }
-      
+
       animepaheState.session = data.match.session;
       console.log('[AnimePahe] Resolved anime session:', animepaheState.session);
     } catch (err) {
@@ -1588,11 +1791,11 @@ async function playAnimepaheEpisode(movieId, ep) {
       const epUrl = '/api/animepahe/episodes?session=' + animepaheState.session + '&page=' + page;
       const res = await fetch(epUrl);
       const data = await res.json();
-      
+
       if (!data || !data.data || !data.data.length) {
         throw new Error('No episode data returned');
       }
-      
+
       animepaheState.episodes[page] = data.data;
     } catch (err) {
       console.error('[AnimePahe] Fetching episodes failed:', err);
@@ -1620,11 +1823,11 @@ async function playAnimepaheEpisode(movieId, ep) {
     const streamUrl = '/api/animepahe/stream?anime_session=' + animepaheState.session + '&ep_session=' + epSession;
     const res = await fetch(streamUrl);
     const data = await res.json();
-    
+
     if (!data.ok || !data.sources || !data.sources.length) {
       throw new Error('No stream sources found');
     }
-    
+
     // Pick the best source
     const bestSource = data.sources[0];
     const videoUrl = bestSource.url;
@@ -1654,14 +1857,14 @@ async function playAnimepaheEpisode(movieId, ep) {
       hls.loadSource(videoUrl);
       hls.attachMedia(video);
 
-      hls.on(Hls.Events.MANIFEST_PARSED, function(event, data) {
+      hls.on(Hls.Events.MANIFEST_PARSED, function (event, data) {
         video.play().catch(e => console.log('[AnimePahe HLS] Autoplay blocked:', e));
-        
+
         // Quality bar
         if (qualityBar && data.levels.length > 1) {
           let qHtml = '<span style="color:#aaa;font-size:0.72rem;font-weight:600;margin-right:4px;">Quality:</span>';
           qHtml += '<button class="hls-q-btn" style="padding:3px 8px;font-size:0.72rem;border-radius:4px;border:1px solid rgba(255,255,255,0.2);background:rgba(139,92,246,0.6);color:#fff;cursor:pointer;" onclick="if(_hlsInstance)_hlsInstance.currentLevel=-1">AUTO</button>';
-          data.levels.forEach(function(level, idx) {
+          data.levels.forEach(function (level, idx) {
             qHtml += '<button class="hls-q-btn" style="padding:3px 8px;font-size:0.72rem;border-radius:4px;border:1px solid rgba(255,255,255,0.2);background:rgba(255,255,255,0.1);color:#fff;cursor:pointer;" onclick="if(_hlsInstance)_hlsInstance.currentLevel=' + idx + '">' + level.height + 'p</button>';
           });
           qualityBar.innerHTML = qHtml;
@@ -1670,7 +1873,7 @@ async function playAnimepaheEpisode(movieId, ep) {
         }
       });
 
-      hls.on(Hls.Events.ERROR, function(event, data) {
+      hls.on(Hls.Events.ERROR, function (event, data) {
         console.error('[AnimePahe HLS] Error:', data.type, data.details);
         if (data.fatal) {
           switch (data.type) {
@@ -1808,7 +2011,7 @@ async function playDirectHLS(movieId) {
       hls.loadSource(videoUrl);
       hls.attachMedia(video);
 
-      hls.on(Hls.Events.MANIFEST_PARSED, function(event, data) {
+      hls.on(Hls.Events.MANIFEST_PARSED, function (event, data) {
         console.log('[HLS] Manifest parsed, levels:', data.levels.length);
         video.play().catch(e => console.log('[HLS] Autoplay blocked:', e));
 
@@ -1816,7 +2019,7 @@ async function playDirectHLS(movieId) {
         if (qualityBar && data.levels.length > 1) {
           let qHtml = '<span style="color:#aaa;font-size:0.72rem;font-weight:600;margin-right:4px;">Quality:</span>';
           qHtml += '<button class="hls-q-btn" style="padding:3px 8px;font-size:0.72rem;border-radius:4px;border:1px solid rgba(255,255,255,0.2);background:rgba(139,92,246,0.6);color:#fff;cursor:pointer;" onclick="if(_hlsInstance)_hlsInstance.currentLevel=-1">AUTO</button>';
-          data.levels.forEach(function(level, idx) {
+          data.levels.forEach(function (level, idx) {
             qHtml += '<button class="hls-q-btn" style="padding:3px 8px;font-size:0.72rem;border-radius:4px;border:1px solid rgba(255,255,255,0.2);background:rgba(255,255,255,0.1);color:#fff;cursor:pointer;" onclick="if(_hlsInstance)_hlsInstance.currentLevel=' + idx + '">' + level.height + 'p</button>';
           });
           qualityBar.innerHTML = qHtml;
@@ -1825,7 +2028,7 @@ async function playDirectHLS(movieId) {
         }
       });
 
-      hls.on(Hls.Events.ERROR, function(event, data) {
+      hls.on(Hls.Events.ERROR, function (event, data) {
         console.error('[HLS] Error:', data.type, data.details);
         if (data.fatal) {
           switch (data.type) {
