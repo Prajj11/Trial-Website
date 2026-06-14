@@ -739,7 +739,7 @@ function openMovieModal(id) {
     const totalEps = parseInt(movie.episodes) || 0;
 
     // Reset anime streaming state for this new modal
-    activeAnimeSource = 'animepahe';
+    activeAnimeSource = 'videasy';
     currentAnimeMovieId = movie.id;
     activeAnimeAnilistId = null;
     anikotoState = { episodes: [], seriesId: null, currentEp: null, lang: 'sub' };
@@ -789,7 +789,7 @@ function closeMovieModal() {
   const animePlayer = document.getElementById('anime-player-container');
   if (animePlayer) animePlayer.innerHTML = '';
   activeStreamSource = null;
-  activeAnimeSource = 'animepahe';
+  activeAnimeSource = 'videasy';
   currentAnimeMovieId = null;
   activeAnimeAnilistId = null;
   anikotoState = { episodes: [], seriesId: null, currentEp: null, lang: 'sub' };
@@ -965,7 +965,7 @@ function switchStreamSource(source, movieId) {
 // ANIKOTO ANIME STREAMING ENGINE
 // ============================================================
 let anikotoState = { episodes: [], seriesId: null, currentEp: null, lang: 'sub' };
-let activeAnimeSource = 'animepahe'; // Track the active anime source
+let activeAnimeSource = 'videasy'; // Track the active anime source
 let currentAnimeMovieId = null; // Track which anime is open
 let activeAnimeAnilistId = null; // AniList ID for Videasy
 let animepaheState = { session: null, episodes: {}, loading: false };
@@ -1108,9 +1108,9 @@ function buildAnimeStreamSection(movie) {
     '<div id="jikan-info-panel" style="display:none;gap:6px;flex-wrap:wrap;margin-bottom:14px;align-items:center;"></div>' +
     // Source selector buttons — reliable sources + direct HLS.js player
     '<div id="anime-source-buttons" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;">' +
-    '<button class="qbt-btn anime-src-btn active" data-source="animepahe" style="flex:1;min-width:80px;padding:8px 12px;font-size:0.82rem;background:linear-gradient(135deg, #10b981, #059669);color:#fff;" onclick="switchAnimeSource(\'animepahe\',' + movie.id + ')">🌸 AnimePahe (Direct)</button>' +
-    '<button class="qbt-btn anime-src-btn" data-source="videasy" style="flex:1;min-width:80px;padding:8px 12px;font-size:0.82rem;background:var(--bg-card2);border:1px solid var(--border);color:var(--text-primary);" onclick="switchAnimeSource(\'videasy\',' + movie.id + ')">▶ Videasy</button>' +
-    '<button class="qbt-btn anime-src-btn" data-source="direct" style="flex:1;min-width:80px;padding:8px 12px;font-size:0.82rem;background:var(--bg-card2);border:1px solid var(--border);color:var(--text-primary);" onclick="switchAnimeSource(\'direct\',' + movie.id + ')">🎬 Direct (HLS)</button>' +
+    '<button class="qbt-btn anime-src-btn active" data-source="videasy" style="flex:1;min-width:80px;padding:8px 12px;font-size:0.82rem;background:linear-gradient(135deg, #10b981, #059669);color:#fff;" onclick="switchAnimeSource(\'videasy\',' + movie.id + ')">▶ Videasy</button>' +
+    '<button class="qbt-btn anime-src-btn" data-source="vidsrc" style="flex:1;min-width:80px;padding:8px 12px;font-size:0.82rem;background:var(--bg-card2);border:1px solid var(--border);color:var(--text-primary);" onclick="switchAnimeSource(\'vidsrc\',' + movie.id + ')">▶ VidSrc</button>' +
+    '<button class="qbt-btn anime-src-btn" data-source="animepahe" style="flex:1;min-width:80px;padding:8px 12px;font-size:0.82rem;background:var(--bg-card2);border:1px solid var(--border);color:var(--text-primary);" onclick="switchAnimeSource(\'animepahe\',' + movie.id + ')">🌸 AnimePahe</button>' +
     '<button class="qbt-btn anime-src-btn" data-source="anikoto" style="flex:1;min-width:80px;padding:8px 12px;font-size:0.82rem;background:var(--bg-card2);border:1px solid var(--border);color:var(--text-primary);" id="anikoto-src-btn" onclick="switchAnimeSource(\'anikoto\',' + movie.id + ')">▶ Anikoto</button>' +
     '</div>' +
     // Episode controls: dropdown + sub/dub
@@ -1151,29 +1151,27 @@ async function resolveAnilistAndAutoplay(movie) {
   // Kick off Jikan episode data fetch in background (non-blocking)
   fetchJikanEpisodes(movie);
 
-  // IMMEDIATELY start playing episode 1 — don't wait for AniList resolution
-  // Use whatever source is available right now (vidsrc via MAL, or videasy fallback)
-  if (currentAnimeMovieId === movie.id) {
-    if (statusEl) statusEl.textContent = 'Starting Episode 1...';
-    playAnimeEpisodeNow(movie.id);
-  }
-
-  // BACKGROUND: Resolve AniList ID for Videasy (improves future episode plays)
+  // Resolve AniList ID FIRST (fast — usually <1s), then auto-play
   if (malId) {
+    if (statusEl) statusEl.textContent = 'Resolving anime ID...';
     try {
       const res = await fetch('/api/anilist/mal/' + malId);
       const data = await res.json();
       if (data.ok && data.anilist_id) {
         activeAnimeAnilistId = data.anilist_id;
         console.log('[Anime] Resolved AniList ID:', activeAnimeAnilistId, 'for MAL:', malId);
-        // If still on this anime and using videasy, the next episode change
-        // will automatically use the resolved AniList ID (no need to re-render)
       } else {
         console.warn('[Anime] Could not resolve AniList ID for MAL:', malId);
       }
     } catch (e) {
       console.error('[Anime] AniList resolution failed:', e);
     }
+  }
+
+  // Now start playing episode 1 with the resolved AniList ID
+  if (currentAnimeMovieId === movie.id) {
+    if (statusEl) statusEl.textContent = 'Starting Episode 1...';
+    playAnimeEpisodeNow(movie.id);
   }
 }
 
@@ -1428,7 +1426,7 @@ async function playAnimeEpisodeNow(movieId) {
   const movie = appState.movies.find(m => m.id == movieId);
   if (!movie) return;
 
-  const source = activeAnimeSource || 'animepahe';
+  const source = activeAnimeSource || 'videasy';
   const epSelect = document.getElementById('anime-ep-select');
   const ep = epSelect ? parseInt(epSelect.value, 10) || 1 : 1;
 
