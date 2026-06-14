@@ -1354,7 +1354,7 @@ def _start_torrent_server():
 
     # Check if port 9411 is already in use (server already running)
     try:
-        r = requests.get('http://localhost:9411/health', timeout=1)
+        r = requests.get('http://127.0.0.1:9411/health', timeout=1)
         if r.status_code == 200:
             print("[TorrentLauncher] Torrent server already running on :9411")
             return
@@ -1418,4 +1418,4 @@ if __name__ == '__main__':
     if os.environ.get('WERKZEUG_RUN_MAIN') != 'true':
         _start_torrent_server()
 
-    app.run(host='0.0.0.0', port=PORT, debug=True)
+    app.run(host='0.0.0.0', port=PORT, debug=False)

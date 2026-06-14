@@ -42,8 +42,11 @@ def main():
             [sys.executable, "-X", "utf8", "server.py"],
             creationflags=subprocess.CREATE_NEW_CONSOLE if os.name == 'nt' else 0
         )
-        # Give it a couple of seconds to spin up
-        time.sleep(2)
+        # Give it up to 2 seconds to spin up, checking every 100ms
+        for _ in range(20):
+            if is_server_running():
+                break
+            time.sleep(0.1)
     else:
         print("Server is already running.")
 
