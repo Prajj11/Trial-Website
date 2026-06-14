@@ -512,7 +512,7 @@ def get_anilist_id(mal_id):
     if mal_id in _anilist_cache:
         return jsonify({'ok': True, 'mal_id': mal_id, 'anilist_id': _anilist_cache[mal_id]})
 
-    # 1. Try ARM mapping (highly reliable, handles MAL->AniList, from Anivexa logic)
+    # 1. Try ARM mapping (highly reliable, handles MAL->AniList, from CineVault logic)
     try:
         arm_resp = requests.get(
             f'https://arm.haglund.dev/api/v2/ids?source=myanimelist&id={mal_id}',
@@ -847,13 +847,13 @@ def get_stream(anilist_id, episode):
 
     info = None
     try:
-        # Strategy 1: Anivexa API via localhost:4000
-        anivexa_url = f'http://localhost:4000/watch/anikoto/{anilist_id}/sub/anikoto-{episode}'
-        r = requests.get(anivexa_url, timeout=15)
+        # Strategy 1: CineVault API via localhost:4000
+        cinevault_url = f'http://localhost:4000/watch/anikoto/{anilist_id}/sub/anikoto-{episode}'
+        r = requests.get(cinevault_url, timeout=15)
         if r.status_code == 200:
             info = r.json()
     except Exception as e:
-        print(f"[Anivexa] stream failed: {e}")
+        print(f"[CineVault API] stream failed: {e}")
 
     sources = []
     

@@ -172,7 +172,7 @@ export default {
     }
 
     return json({
-      name: "Anivexa API 2.1", //actually i will goon to you if you change this ok? so erm..maybe i wont..or maybe i will idk
+      name: "CineVault API", //actually i will goon to you if you change this ok? so erm..maybe i wont..or maybe i will idk
       cache: _CACHE_ENABLED,
       providers: [
         "animepahe",

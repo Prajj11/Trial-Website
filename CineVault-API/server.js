@@ -39,7 +39,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`api-vexa dev server running at http://localhost:${PORT}`);
+  console.log(`CineVault API server running at http://localhost:${PORT}`);
   console.log(`  GET /map/:anilistId`);
   console.log(`  GET /episodes/:anilistId`);
   console.log(`  GET /watch/animepahe/:id/sub|dub/animepahe-:ep`);

@@ -1,12 +1,12 @@
 <div align="center">
 
-# Anivexa API 2.1
+# CineVault API
 
 **Anime streaming aggregator API — one endpoint, all your sources.**
 
-![Views](https://visitor-badge.laobi.icu/badge?page_id=walterwhite-69.Anivexa-API)
+![Views](https://visitor-badge.laobi.icu/badge?page_id=prajw.CineVault-API)
 [![Discord](https://img.shields.io/badge/Join%20Discord-5865F2?style=flat-square&logo=discord&logoColor=white)](https://discord.com/invite/zs22ZJttZM)
-[![GitHub stars](https://img.shields.io/github/stars/walterwhite-69/Anivexa-API?style=flat-square&color=yellow)](https://github.com/walterwhite-69/Anivexa-API/stargazers)
+[![GitHub stars](https://img.shields.io/github/stars/prajw/CineVault?style=flat-square&color=yellow)](https://github.com/prajw/CineVault/stargazers)
 
 </div>
 
@@ -16,7 +16,7 @@
 
 A single API that aggregates anime episode lists and streaming links from multiple providers. Give it an AniList ID, get back everything — episodes, sources, and stream URLs — all in one place.
 
-It's the backbone powering **[Anivexa](https://github.com/walterwhite-69/Anivexa)**, a full anime streaming client built on top of this.
+It's the backbone powering **CineVault**, a full anime streaming client built on top of this.
 
 ---
 
@@ -61,8 +61,8 @@ GET /stream/reanime/:id/sub|dub/:ep
 ## Self-hosted
 
 ```bash
-git clone https://github.com/walterwhite-69/Anivexa-API
-cd Anivexa-API
+git clone https://github.com/prajw/CineVault
+cd CineVault-API
 node server.js
 ```
 
