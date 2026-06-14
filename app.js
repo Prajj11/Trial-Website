@@ -716,7 +716,6 @@ function openMovieModal(id) {
       '</div>' +
       '</div>' : '') +
     (isAnime ? buildAnimeStreamSection(movie) : '') +
-    (isAnime ? buildKwikDownloadSection(movie) : '') +
     '<div class="qbt-section">' +
     '<h3 class="modal-section-title" style="margin-bottom:10px;">' + (isAnime ? '🧲 Torrent Download' : '🎬 Download') + '</h3>' +
     '<p style="font-size:0.82rem;color:var(--text-muted);margin-bottom:10px;">' +
@@ -739,7 +738,7 @@ function openMovieModal(id) {
     const totalEps = parseInt(movie.episodes) || 0;
 
     // Reset anime streaming state for this new modal
-    activeAnimeSource = 'videasy';
+    activeAnimeSource = 'direct';
     currentAnimeMovieId = movie.id;
     activeAnimeAnilistId = null;
     anikotoState = { episodes: [], seriesId: null, currentEp: null, lang: 'sub' };
@@ -760,8 +759,6 @@ function openMovieModal(id) {
           }
           epGrid.innerHTML = gridHtml;
         }
-        // Also render the download grid
-        renderEpisodeDownloadGrid(movie.id, 1, Math.min(24, totalEps));
       }, 50);
     }
 
@@ -789,7 +786,7 @@ function closeMovieModal() {
   const animePlayer = document.getElementById('anime-player-container');
   if (animePlayer) animePlayer.innerHTML = '';
   activeStreamSource = null;
-  activeAnimeSource = 'videasy';
+  activeAnimeSource = 'direct';
   currentAnimeMovieId = null;
   activeAnimeAnilistId = null;
   anikotoState = { episodes: [], seriesId: null, currentEp: null, lang: 'sub' };
@@ -804,7 +801,7 @@ let _iframeLoadTimer = null; // Tracks iframe load timeout for auto-fallback
 let _hlsInstance = null; // HLS.js instance for direct player
 
 // Source priority for auto-cascade when one fails
-const ANIME_SOURCE_PRIORITY = ['videasy', 'vidsrc', 'embed'];
+const ANIME_SOURCE_PRIORITY = ['direct', 'videasy', 'vidsrc', 'embed'];
 const MOVIE_SOURCE_PRIORITY = ['videasy', 'vidsrc', 'embed'];
 
 function _destroyCurrentPlayer(containerId) {
@@ -965,7 +962,7 @@ function switchStreamSource(source, movieId) {
 // ANIKOTO ANIME STREAMING ENGINE
 // ============================================================
 let anikotoState = { episodes: [], seriesId: null, currentEp: null, lang: 'sub' };
-let activeAnimeSource = 'videasy'; // Track the active anime source
+let activeAnimeSource = 'direct'; // Track the active anime source
 let currentAnimeMovieId = null; // Track which anime is open
 let activeAnimeAnilistId = null; // AniList ID for Videasy
 let animepaheState = { session: null, episodes: {}, loading: false };
@@ -1108,10 +1105,12 @@ function buildAnimeStreamSection(movie) {
     '<div id="jikan-info-panel" style="display:none;gap:6px;flex-wrap:wrap;margin-bottom:14px;align-items:center;"></div>' +
     // Source selector buttons — reliable sources + direct HLS.js player
     '<div id="anime-source-buttons" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;">' +
-    '<button class="qbt-btn anime-src-btn active" data-source="videasy" style="flex:1;min-width:80px;padding:8px 12px;font-size:0.82rem;background:linear-gradient(135deg, #10b981, #059669);color:#fff;" onclick="switchAnimeSource(\'videasy\',' + movie.id + ')">▶ Videasy</button>' +
+    '<button class="qbt-btn anime-src-btn active" data-source="direct" style="flex:1;min-width:80px;padding:8px 12px;font-size:0.82rem;background:linear-gradient(135deg, #10b981, #059669);color:#fff;" onclick="switchAnimeSource(\'direct\',' + movie.id + ')">▶ Anivexa (Native)</button>' +
+    '<button class="qbt-btn anime-src-btn" data-source="videasy" style="flex:1;min-width:80px;padding:8px 12px;font-size:0.82rem;background:var(--bg-card2);border:1px solid var(--border);color:var(--text-primary);" onclick="switchAnimeSource(\'videasy\',' + movie.id + ')">▶ Videasy</button>' +
     '<button class="qbt-btn anime-src-btn" data-source="vidsrc" style="flex:1;min-width:80px;padding:8px 12px;font-size:0.82rem;background:var(--bg-card2);border:1px solid var(--border);color:var(--text-primary);" onclick="switchAnimeSource(\'vidsrc\',' + movie.id + ')">▶ VidSrc</button>' +
     '<button class="qbt-btn anime-src-btn" data-source="animepahe" style="flex:1;min-width:80px;padding:8px 12px;font-size:0.82rem;background:var(--bg-card2);border:1px solid var(--border);color:var(--text-primary);" onclick="switchAnimeSource(\'animepahe\',' + movie.id + ')">🌸 AnimePahe</button>' +
     '<button class="qbt-btn anime-src-btn" data-source="anikoto" style="flex:1;min-width:80px;padding:8px 12px;font-size:0.82rem;background:var(--bg-card2);border:1px solid var(--border);color:var(--text-primary);" id="anikoto-src-btn" onclick="switchAnimeSource(\'anikoto\',' + movie.id + ')">▶ Anikoto</button>' +
+    '<button class="qbt-btn anime-src-btn" data-source="torrent" style="flex:1;min-width:80px;padding:8px 12px;font-size:0.82rem;background:var(--bg-card2);border:1px solid var(--border);color:var(--text-primary);" onclick="switchAnimeSource(\'torrent\',' + movie.id + ')">🧲 Torrent Player</button>' +
     '</div>' +
     // Episode controls: dropdown + sub/dub
     '<div id="anime-stream-controls" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px;align-items:center;">' +
@@ -1376,6 +1375,14 @@ function switchAnimeSource(source, movieId) {
     }
   });
 
+  // Torrent player
+  if (source === 'torrent') {
+    const epSelect = document.getElementById('anime-ep-select');
+    const ep = epSelect ? parseInt(epSelect.value, 10) || 1 : 1;
+    playTorrentEpisode(movieId, ep);
+    return;
+  }
+
   // AnimePahe player
   if (source === 'animepahe') {
     const epSelect = document.getElementById('anime-ep-select');
@@ -1426,9 +1433,15 @@ async function playAnimeEpisodeNow(movieId) {
   const movie = appState.movies.find(m => m.id == movieId);
   if (!movie) return;
 
-  const source = activeAnimeSource || 'videasy';
+  const source = activeAnimeSource || 'direct';
   const epSelect = document.getElementById('anime-ep-select');
   const ep = epSelect ? parseInt(epSelect.value, 10) || 1 : 1;
+
+  // Torrent player
+  if (source === 'torrent') {
+    playTorrentEpisode(movieId, ep);
+    return;
+  }
 
   // AnimePahe player
   if (source === 'animepahe') {
@@ -1467,7 +1480,7 @@ async function playAnimeEpisodeNow(movieId) {
   }
 
   // Build auto-fallback: try next source if iframe doesn't load
-  const animeSources = ['videasy', 'vidsrc', 'embed'];
+  const animeSources = ['direct', 'videasy', 'vidsrc', 'embed'];
   const srcIdx = animeSources.indexOf(source);
   const fallbackFn = (srcIdx >= 0 && srcIdx < animeSources.length - 1) ? function () {
     const nextSrc = animeSources[srcIdx + 1];
@@ -2082,59 +2095,6 @@ async function playDirectHLS(movieId) {
       '<span style="font-size:0.78rem;opacity:0.6;margin-top:4px;">' + escapeHtml(err.message) + '</span>' +
       '</div>';
   }
-}
-
-// ============================================================
-// KWIK DOWNLOAD SECTION BUILDER
-// ============================================================
-function buildKwikDownloadSection(movie) {
-  const totalEps = parseInt(movie.episodes) || 0;
-  const epsPerPage = 24;
-  const totalPages = Math.ceil(totalEps / epsPerPage) || 1;
-  const showEps = totalEps > 0;
-
-  let html = '<div class="kwik-section">';
-  html += '<div class="kwik-header">';
-  html += '<div class="kwik-logo-wrap">';
-  html += '<span class="kwik-logo">⬇</span>';
-  html += '<div>';
-  html += '<h3 class="modal-section-title" style="margin-bottom:2px;">▶️ Watch Anime (Anikoto)</h3>';
-  html += '<p style="font-size:0.78rem;color:var(--text-muted);margin:0;">Browser embeds buffer infinitely for anime. Click an episode below to watch or download instantly without buffering.</p>';
-  html += '</div>';
-  html += '</div>';
-  html += '<a href="https://anikototv.to/filter?keyword=' + encodeURIComponent(movie.title) + '" target="_blank" rel="noopener" class="kwik-browse-all" onclick="showToast(\'Opening Anikoto...\')">Browse All ↗</a>';
-  html += '</div>';
-
-  if (showEps) {
-    // Quick download all button
-    html += '<button class="kwik-download-all-btn" onclick="openKwikDownload(\'' + escapeHtml(movie.title).replace(/'/g, "\\'") + '\')">';
-    html += '<span class="kwik-dl-icon">📥</span> Open on Anikoto (Kwik)';
-    html += '</button>';
-
-    // Episode grid with pagination
-    html += '<div class="kwik-ep-controls">';
-    html += '<span style="font-size:0.82rem;font-weight:600;color:var(--text-secondary);">' + totalEps + ' Episodes Available</span>';
-    if (totalPages > 1) {
-      html += '<div class="kwik-ep-nav">';
-      html += '<button id="kwik-ep-prev" class="kwik-nav-btn" onclick="changeEpPage(' + movie.id + ',' + totalEps + ',-1)" disabled>◀</button>';
-      html += '<span id="kwik-ep-page" class="kwik-page-indicator" data-page="1">Page 1 / ' + totalPages + '</span>';
-      html += '<button id="kwik-ep-next" class="kwik-nav-btn" onclick="changeEpPage(' + movie.id + ',' + totalEps + ',1)"' + (totalPages <= 1 ? ' disabled' : '') + '>▶</button>';
-      html += '</div>';
-    }
-    html += '</div>';
-
-    html += '<div id="kwik-episode-grid" class="kwik-episode-grid"></div>';
-
-    // Episode grid is populated by openMovieModal after DOM update
-  } else {
-    html += '<button class="kwik-download-all-btn" onclick="openKwikDownload(\'' + escapeHtml(movie.title).replace(/'/g, "\\'") + '\')">';
-    html += '<span class="kwik-dl-icon">📥</span> Search on Anikoto (Kwik)';
-    html += '</button>';
-    html += '<p style="font-size:0.8rem;color:var(--text-muted);text-align:center;margin-top:8px;">Episode count not available — browse manually to find episodes.</p>';
-  }
-
-  html += '</div>';
-  return html;
 }
 
 // ============================================================

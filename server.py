@@ -512,6 +512,27 @@ def get_anilist_id(mal_id):
     if mal_id in _anilist_cache:
         return jsonify({'ok': True, 'mal_id': mal_id, 'anilist_id': _anilist_cache[mal_id]})
 
+    # 1. Try ARM mapping (highly reliable, handles MAL->AniList, from Anivexa logic)
+    try:
+        arm_resp = requests.get(
+            f'https://arm.haglund.dev/api/v2/ids?source=myanimelist&id={mal_id}',
+            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)', 'Accept': 'application/json'},
+            timeout=5
+        )
+        if arm_resp.status_code == 200:
+            arm_data = arm_resp.json()
+            anilist_id = arm_data.get('anilist')
+            if anilist_id:
+                _anilist_cache[mal_id] = anilist_id
+                return jsonify({
+                    'ok': True, 
+                    'mal_id': mal_id, 
+                    'anilist_id': anilist_id
+                })
+    except Exception as e:
+        print(f'[AniList] ARM mapping failed for {mal_id}: {e}')
+
+    # 2. Fallback to AniList GraphQL
     query = '''
     query ($idMal: Int) {
       Media(idMal: $idMal, type: ANIME) {
@@ -824,59 +845,37 @@ def get_stream(anilist_id, episode):
         if now - ts < _STREAM_CACHE_TTL:
             return jsonify(data)
 
-    # Strategy 1: Consumet AniList provider — gogoanime source
-    info = _try_consumet(f'/meta/anilist/watch/{anilist_id}', {
-        'episodeId': f'{anilist_id}-episode-{episode}',
-        'provider': 'gogoanime'
-    })
+    info = None
+    try:
+        # Strategy 1: Anivexa API via localhost:4000
+        anivexa_url = f'http://localhost:4000/watch/anikoto/{anilist_id}/sub/anikoto-{episode}'
+        r = requests.get(anivexa_url, timeout=15)
+        if r.status_code == 200:
+            info = r.json()
+    except Exception as e:
+        print(f"[Anivexa] stream failed: {e}")
 
-    # Strategy 2: Consumet gogoanime provider with episode ID patterns
-    if not info or not info.get('sources'):
-        info = _try_consumet(f'/meta/anilist/info/{anilist_id}')
-        if info and info.get('episodes'):
-            # Find the matching episode
-            ep_data = None
-            for ep in info['episodes']:
-                ep_num = ep.get('number')
-                if ep_num and int(ep_num) == episode:
-                    ep_data = ep
-                    break
-            if ep_data and ep_data.get('id'):
-                ep_id = ep_data['id']
-                info = _try_consumet(f'/meta/anilist/watch/{ep_id}')
+    sources = []
+    
+    if info and info.get('ssub') and info['ssub'].get('streams'):
+        for src in info['ssub']['streams']:
+            url = src.get('url', '')
+            quality = '1080p' if '1080' in url else 'auto'
+            is_m3u8 = src.get('type') == 'hls' or '.m3u8' in url
+            if url:
+                sources.append({
+                    'url': url,
+                    'quality': quality,
+                    'isM3U8': is_m3u8
+                })
 
-    # Strategy 3: Direct gogoanime provider
-    if not info or not info.get('sources'):
-        info = _try_consumet(f'/anime/gogoanime/info/{anilist_id}')
-        if info and info.get('episodes'):
-            for ep in info['episodes']:
-                if ep.get('number') and int(ep['number']) == episode:
-                    ep_id = ep.get('id', '')
-                    watch_data = _try_consumet(f'/anime/gogoanime/watch/{ep_id}')
-                    if watch_data and watch_data.get('sources'):
-                        info = watch_data
-                    break
-
-    if not info or not info.get('sources'):
+    if not sources:
         return jsonify({
             'ok': False,
             'error': 'No streaming sources found',
             'anilist_id': anilist_id,
             'episode': episode
         })
-
-    # Parse sources — prefer m3u8, then mp4
-    sources = []
-    for src in info.get('sources', []):
-        url = src.get('url', '')
-        quality = src.get('quality', 'default')
-        is_m3u8 = '.m3u8' in url or src.get('isM3U8', False)
-        if url:
-            sources.append({
-                'url': url,
-                'quality': quality,
-                'isM3U8': is_m3u8
-            })
 
     # Sort: m3u8 first, then by quality (1080p > 720p > 480p > default)
     quality_order = {'1080p': 0, '720p': 1, '480p': 2, '360p': 3, 'default': 4, 'auto': -1, 'backup': 5}
@@ -1327,79 +1326,6 @@ def serve_static(filename):
 # MAIN
 # ============================================================
 
-# ── Torrent Stream Server (Node.js) auto-launcher ─────────────────────────────
-_torrent_proc = None
-
-def _start_torrent_server():
-    """
-    Starts the Node.js WebTorrent stream server as a child process.
-    Killed automatically when Flask exits (via atexit).
-    """
-    global _torrent_proc
-
-    node_server = os.path.join(BASE_DIR, 'animepahe-api--main', 'torrent-stream-server.js')
-    node_cwd    = os.path.join(BASE_DIR, 'animepahe-api--main')
-
-    if not os.path.exists(node_server):
-        print("[TorrentLauncher] torrent-stream-server.js not found — skipping.")
-        return
-
-    # Find node executable
-    node_exe = 'node'
-    try:
-        subprocess.run([node_exe, '--version'], capture_output=True, check=True)
-    except Exception:
-        print("[TorrentLauncher] 'node' not found in PATH — torrent streaming disabled.")
-        return
-
-    # Check if port 9411 is already in use (server already running)
-    try:
-        r = requests.get('http://127.0.0.1:9411/health', timeout=1)
-        if r.status_code == 200:
-            print("[TorrentLauncher] Torrent server already running on :9411")
-            return
-    except Exception:
-        pass  # Not running yet — start it
-
-    print("[TorrentLauncher] Starting Node.js torrent stream server on :9411 ...")
-    try:
-        _torrent_proc = subprocess.Popen(
-            [node_exe, 'torrent-stream-server.js'],
-            cwd=node_cwd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-        )
-
-        # Stream Node output to console in a background thread
-        def _pipe_output(proc):
-            try:
-                for line in proc.stdout:
-                    print(f"[TorrentServer] {line}", end='')
-            except Exception:
-                pass
-
-        t = threading.Thread(target=_pipe_output, args=(_torrent_proc,), daemon=True)
-        t.start()
-
-        # Register cleanup
-        def _kill_torrent():
-            if _torrent_proc and _torrent_proc.poll() is None:
-                print("\n[TorrentLauncher] Shutting down torrent server...")
-                _torrent_proc.terminate()
-                try:
-                    _torrent_proc.wait(timeout=4)
-                except subprocess.TimeoutExpired:
-                    _torrent_proc.kill()
-        atexit.register(_kill_torrent)
-
-        print("[TorrentLauncher] Torrent server started (PID %d)" % _torrent_proc.pid)
-
-    except Exception as e:
-        print(f"[TorrentLauncher] Failed to start torrent server: {e}")
-
-
 if __name__ == '__main__':
     if not os.path.exists(DB_PATH):
         print("[Error] Database not found! Run 'python init_db.py' first.")
@@ -1412,10 +1338,5 @@ if __name__ == '__main__':
     print(f"   URL: http://localhost:{PORT}")
     print(f"   API: http://localhost:{PORT}/api/movies")
     print("=" * 50)
-
-    # Auto-start the Node.js WebTorrent stream server
-    # (skipped when Flask reloader forks a child — only runs once in the main process)
-    if os.environ.get('WERKZEUG_RUN_MAIN') != 'true':
-        _start_torrent_server()
 
     app.run(host='0.0.0.0', port=PORT, debug=False)

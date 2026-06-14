@@ -42,6 +42,14 @@ def main():
             [sys.executable, "-X", "utf8", "server.py"],
             creationflags=subprocess.CREATE_NEW_CONSOLE if os.name == 'nt' else 0
         )
+        
+        print("Starting Anivexa API on port 4000...")
+        anivexa_dir = os.path.join(os.path.dirname(__file__), "Anivexa-API-main", "Anivexa-API-main")
+        subprocess.Popen(
+            ["cmd.exe", "/c", "npm start"],
+            cwd=anivexa_dir,
+            creationflags=subprocess.CREATE_NEW_CONSOLE if os.name == 'nt' else 0
+        )
         # Give it up to 2 seconds to spin up, checking every 100ms
         for _ in range(20):
             if is_server_running():
