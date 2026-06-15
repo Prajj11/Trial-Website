@@ -831,67 +831,91 @@ def _try_consumet(path, params=None):
     return None
 
 
-@app.route('/api/stream/<int:anilist_id>/<int:episode>', methods=['GET'])
-def get_stream(anilist_id, episode):
+@app.route('/api/episodes/<int:anilist_id>', methods=['GET'])
+def get_episodes(anilist_id):
+    """Proxy to CineVault-API for all provider episodes."""
+    try:
+        r = requests.get(f'http://localhost:4000/episodes/{anilist_id}', timeout=30)
+        return jsonify(r.json()), r.status_code
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 502
+
+
+@app.route('/api/stream/provider/<provider>/<int:anilist_id>/<audio>/<path:provider_ep_id>', methods=['GET'])
+def get_stream_provider(provider, anilist_id, audio, provider_ep_id):
     """
-    Get a direct .m3u8 or .mp4 streaming URL for an anime episode.
-    Uses Consumet (AniList provider) to resolve the video source.
-    Returns: { ok, sources: [{ url, quality, isM3U8 }], referer }
+    Get streaming URLs for an episode via a specific provider on CineVault-API.
     """
-    cache_key = f'stream:{anilist_id}:{episode}'
+    cache_key = f'stream:{provider}:{anilist_id}:{audio}:{provider_ep_id}'
     now = time.time()
     if cache_key in _stream_cache:
         data, ts = _stream_cache[cache_key]
         if now - ts < _STREAM_CACHE_TTL:
             return jsonify(data)
 
-    info = None
     try:
-        # Strategy 1: CineVault API via localhost:4000
-        cinevault_url = f'http://localhost:4000/watch/anikoto/{anilist_id}/sub/anikoto-{episode}'
-        r = requests.get(cinevault_url, timeout=15)
-        if r.status_code == 200:
-            info = r.json()
+        cinevault_url = f'http://localhost:4000/watch/{provider}/{anilist_id}/{audio}/{provider_ep_id}'
+        r = requests.get(cinevault_url, timeout=20)
+        if r.status_code != 200:
+            return jsonify({'ok': False, 'error': f'Upstream error {r.status_code}', 'details': r.text}), 502
+        info = r.json()
     except Exception as e:
-        print(f"[CineVault API] stream failed: {e}")
+        return jsonify({'ok': False, 'error': str(e)}), 502
 
     sources = []
     
-    if info and info.get('ssub') and info['ssub'].get('streams'):
-        for src in info['ssub']['streams']:
+    # CineVault-API returns different shapes.
+    # E.g. {"ssub": {"streams": [...]}} or {"streams": [...]}
+    streams_arrays = []
+    if 'streams' in info:
+        streams_arrays.append(info['streams'])
+    if 'ssub' in info and 'streams' in info['ssub']:
+        streams_arrays.append(info['ssub']['streams'])
+    if 'sdub' in info and 'streams' in info['sdub']:
+        streams_arrays.append(info['sdub']['streams'])
+
+    if isinstance(info, list):
+        streams_arrays.append(info)
+
+    for arr in streams_arrays:
+        for src in arr:
             url = src.get('url', '')
-            quality = '1080p' if '1080' in url else 'auto'
-            is_m3u8 = src.get('type') == 'hls' or '.m3u8' in url
-            if url:
+            quality = src.get('quality', 'auto')
+            if '1080' in url: quality = '1080p'
+            elif '720' in url: quality = '720p'
+            
+            is_m3u8 = src.get('type') == 'hls' or src.get('isM3U8') or '.m3u8' in url
+            stream_referer = src.get('referer', info.get('headers', {}).get('Referer', ''))
+            
+            if url and is_m3u8:
+                if stream_referer:
+                    url = f'/api/proxy/hls/manifest?url={requests.utils.quote(url)}&referer={requests.utils.quote(stream_referer)}'
                 sources.append({
                     'url': url,
                     'quality': quality,
-                    'isM3U8': is_m3u8
+                    'isM3U8': True,
+                    'type': 'hls'
+                })
+            elif url:
+                sources.append({
+                    'url': url,
+                    'quality': quality,
+                    'isM3U8': False,
+                    'type': src.get('type', 'mp4')
                 })
 
     if not sources:
-        return jsonify({
-            'ok': False,
-            'error': 'No streaming sources found',
-            'anilist_id': anilist_id,
-            'episode': episode
-        })
+        return jsonify({'ok': False, 'error': 'No streaming sources found', 'provider': provider, 'anilist_id': anilist_id})
 
-    # Sort: m3u8 first, then by quality (1080p > 720p > 480p > default)
+    # Sort
     quality_order = {'1080p': 0, '720p': 1, '480p': 2, '360p': 3, 'default': 4, 'auto': -1, 'backup': 5}
-    sources.sort(key=lambda s: (
-        0 if s['isM3U8'] else 1,
-        quality_order.get(s['quality'], 3)
-    ))
-
-    referer = info.get('headers', {}).get('Referer', '')
+    sources.sort(key=lambda s: (0 if s['isM3U8'] else 1, quality_order.get(s['quality'], 3)))
 
     result = {
         'ok': True,
         'sources': sources,
-        'referer': referer,
-        'anilist_id': anilist_id,
-        'episode': episode
+        'referer': info.get('headers', {}).get('Referer', ''),
+        'anilist_id': anilist_id
     }
     _stream_cache[cache_key] = (result, now)
     return jsonify(result)
@@ -1109,8 +1133,8 @@ def animepahe_stream():
             quality = src.get('resolution', '720') + 'p'
             is_m3u8 = src.get('isM3U8', True)
             if url:
-                # Wrap the m3u8 in our Flask proxy to bypass Referer check
-                proxied_url = f'/api/animepahe/hls/manifest?url={requests.utils.quote(url)}'
+                # Wrap the m3u8 in our generic Flask proxy to bypass Referer check
+                proxied_url = f'/api/proxy/hls/manifest?url={requests.utils.quote(url)}&referer={requests.utils.quote("https://kwik.cx/")}'
                 formatted_sources.append({
                     'url': proxied_url,
                     'quality': quality,
@@ -1128,21 +1152,24 @@ def animepahe_stream():
         return jsonify({'ok': False, 'error': str(e)}), 500
 
 
-@app.route('/api/animepahe/hls/manifest')
-def animepahe_hls_manifest():
+@app.route('/api/proxy/hls/manifest')
+def generic_hls_manifest():
     """
     Proxies the .m3u8 manifest file, rewriting relative segment URLs to go through our proxy.
     """
     from urllib.parse import urljoin
     m3u8_url = request.args.get('url')
+    referer = request.args.get('referer', '')
     if not m3u8_url:
         return 'Missing url', 400
 
     try:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Referer': 'https://kwik.cx/'
         }
+        if referer:
+            headers['Referer'] = referer
+
         resp = requests.get(m3u8_url, headers=headers, timeout=10)
         if resp.status_code != 200:
             return f'Failed to fetch manifest: {resp.status_code}', 502
@@ -1153,7 +1180,12 @@ def animepahe_hls_manifest():
             line = line.strip()
             if line and not line.startswith('#'):
                 resolved_url = urljoin(m3u8_url, line)
-                lines[i] = f'/api/animepahe/hls/segment?url={requests.utils.quote(resolved_url)}'
+                # Ensure the resolved segment goes back to the proxy, carrying the referer
+                lines[i] = f'/api/proxy/hls/segment?url={requests.utils.quote(resolved_url)}&referer={requests.utils.quote(referer)}'
+            elif line.startswith('#EXT-X-STREAM-INF:'):
+                # The next line will be a sub-manifest, we don't need to do anything special
+                # since the 'not startswith('#')' block will catch it and proxy it.
+                pass
 
         proxied_content = '\n'.join(lines)
         
@@ -1166,20 +1198,23 @@ def animepahe_hls_manifest():
         return str(e), 500
 
 
-@app.route('/api/animepahe/hls/segment')
-def animepahe_hls_segment():
+@app.route('/api/proxy/hls/segment')
+def generic_hls_segment():
     """
     Proxies a video segment (.ts or other) attaching the required Referer header.
     """
     segment_url = request.args.get('url')
+    referer = request.args.get('referer', '')
     if not segment_url:
         return 'Missing url', 400
 
     try:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Referer': 'https://kwik.cx/'
         }
+        if referer:
+            headers['Referer'] = referer
+
         resp = requests.get(segment_url, headers=headers, stream=True, timeout=15)
         if resp.status_code != 200:
             return f'Failed to fetch segment: {resp.status_code}', 502

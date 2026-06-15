@@ -46,6 +46,8 @@ const GENRE_ICON = {
 // --- Storage Helper ---
 function getStorage(key, def) { try { return localStorage.getItem(key) || def; } catch (e) { return def; } }
 
+let cinevaultEpisodes = null;
+
 // --- State ---
 let appState = {
   movies: [], filtered: [], currentPage: 1,
@@ -716,15 +718,7 @@ function openMovieModal(id) {
       '</div>' +
       '</div>' : '') +
     (isAnime ? buildAnimeStreamSection(movie) : '') +
-    '<div class="qbt-section">' +
-    '<h3 class="modal-section-title" style="margin-bottom:10px;">' + (isAnime ? '🧲 Torrent Download' : '🎬 Download') + '</h3>' +
-    '<p style="font-size:0.82rem;color:var(--text-muted);margin-bottom:10px;">' +
-    (isAnime ? 'Alternatively, find torrents from Nyaa directly in your Torrent client.' : 'Finds the best available torrent from YTS and opens it directly in your qBittorrent app.') +
-    '</p>' +
-    '<div id="qbt-torrent-info" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;min-height:26px;"></div>' +
-    '<button id="qbt-download-btn" class="qbt-btn" onclick="downloadWithQBittorrent(' + movie.id + ')">' + (isAnime ? '🧲 Search on Nyaa' : '🎬 Open Best in qBittorrent') + '</button>' +
-    '<div id="qbt-quality-panel" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:12px;"></div>' +
-    '</div>' +
+    '' +
     '<h3 class="modal-section-title" style="margin-top:22px;">🔍 Browse Manually</h3>' +
     '<div class="torrent-grid">' + fallbackHtml + '</div>' +
     '</div>' +
@@ -1081,6 +1075,48 @@ function enrichEpisodeGridWithJikan() {
   }
 }
 
+function renderCinevaultProviders() {
+  const container = document.getElementById('anime-source-buttons');
+  if (!container || !cinevaultEpisodes) return;
+
+  const validProviders = ['animepahe', 'allmanga', 'reanime', 'anikoto', 'animegg', 'anineko', 'anidbapp'];
+  const providerNames = {
+    animepahe: '🌸 AnimePahe',
+    allmanga: '📘 AllManga',
+    reanime: '🔥 Reanime',
+    anikoto: '▶ Anikoto',
+    animegg: '⚡ AnimeGG',
+    anineko: '🐱 AniNeko',
+    anidbapp: '📺 AniDB App'
+  };
+
+  let html = '';
+  html += '<button class="qbt-btn anime-src-btn" data-source="videasy" style="flex:1;min-width:80px;padding:8px 12px;font-size:0.82rem;background:var(--bg-card2);border:1px solid var(--border);color:var(--text-primary);" onclick="switchAnimeSource(\'videasy\',' + currentAnimeMovieId + ')">▶ Videasy</button>';
+  html += '<button class="qbt-btn anime-src-btn" data-source="vidsrc" style="flex:1;min-width:80px;padding:8px 12px;font-size:0.82rem;background:var(--bg-card2);border:1px solid var(--border);color:var(--text-primary);" onclick="switchAnimeSource(\'vidsrc\',' + currentAnimeMovieId + ')">▶ VidSrc</button>';
+  html += '<button class="qbt-btn anime-src-btn" data-source="torrent" style="flex:1;min-width:80px;padding:8px 12px;font-size:0.82rem;background:var(--bg-card2);border:1px solid var(--border);color:var(--text-primary);" onclick="switchAnimeSource(\'torrent\',' + currentAnimeMovieId + ')">🧲 Torrent Player</button>';
+
+  let firstProvider = null;
+
+  for (const p of validProviders) {
+    if (cinevaultEpisodes[p] && cinevaultEpisodes[p].episodes) {
+      const subLen = (cinevaultEpisodes[p].episodes.sub || []).length;
+      const dubLen = (cinevaultEpisodes[p].episodes.dub || []).length;
+      if (subLen > 0 || dubLen > 0) {
+        if (!firstProvider) firstProvider = 'cv_' + p;
+        html = '<button class="qbt-btn anime-src-btn" data-source="cv_' + p + '" style="flex:1;min-width:80px;padding:8px 12px;font-size:0.82rem;background:var(--bg-card2);border:1px solid var(--border);color:var(--text-primary);" onclick="switchAnimeSource(\'cv_' + p + '\',' + currentAnimeMovieId + ')">' + providerNames[p] + '</button>' + html;
+      }
+    }
+  }
+
+  container.innerHTML = html;
+
+  if (activeAnimeSource === 'direct' && firstProvider) {
+    activeAnimeSource = firstProvider;
+  }
+
+  if (activeAnimeSource) switchAnimeSource(activeAnimeSource, currentAnimeMovieId);
+}
+
 function buildAnimeStreamSection(movie) {
   const totalEps = parseInt(movie.episodes) || 24;
   currentAnimeMovieId = movie.id;
@@ -1101,8 +1137,6 @@ function buildAnimeStreamSection(movie) {
     '</div>' +
     '</div>' +
     '</div>' +
-    // Jikan/MAL info panel (populated asynchronously by fetchJikanEpisodes)
-    '<div id="jikan-info-panel" style="display:none;gap:6px;flex-wrap:wrap;margin-bottom:14px;align-items:center;"></div>' +
     // Source selector buttons — reliable sources + direct HLS.js player
     '<div id="anime-source-buttons" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;">' +
     '<button class="qbt-btn anime-src-btn active" data-source="direct" style="flex:1;min-width:80px;padding:8px 12px;font-size:0.82rem;background:linear-gradient(135deg, #10b981, #059669);color:#fff;" onclick="switchAnimeSource(\'direct\',' + movie.id + ')">▶ CineVault (Native)</button>' +
@@ -1159,6 +1193,13 @@ async function resolveAnilistAndAutoplay(movie) {
       if (data.ok && data.anilist_id) {
         activeAnimeAnilistId = data.anilist_id;
         console.log('[Anime] Resolved AniList ID:', activeAnimeAnilistId, 'for MAL:', malId);
+
+        if (statusEl) statusEl.textContent = 'Fetching streams...';
+        const epRes = await fetch('/api/episodes/' + activeAnimeAnilistId);
+        if (epRes.ok) {
+          cinevaultEpisodes = await epRes.json();
+          renderCinevaultProviders();
+        }
       } else {
         console.warn('[Anime] Could not resolve AniList ID for MAL:', malId);
       }
@@ -1223,7 +1264,7 @@ async function streamMagnet(magnet, containerId) {
 
   // Cancel any existing torrent
   if (_activeTorrentInfoHash) {
-    fetch('/api/torrent-stream/stop/' + _activeTorrentInfoHash, { method: 'DELETE' }).catch(() => {});
+    fetch('/api/torrent-stream/stop/' + _activeTorrentInfoHash, { method: 'DELETE' }).catch(() => { });
     clearInterval(_torrentStatusInterval);
     _activeTorrentInfoHash = null;
   }
@@ -1397,6 +1438,13 @@ function switchAnimeSource(source, movieId) {
     return;
   }
 
+  if (source.startsWith('cv_')) {
+    const epSelect = document.getElementById('anime-ep-select');
+    const ep = epSelect ? parseInt(epSelect.value, 10) || 1 : 1;
+    playCinevaultProvider(source.replace('cv_', ''), movieId, ep);
+    return;
+  }
+
   // If switching to Anikoto and we have Anikoto episodes loaded, use those
   if (source === 'anikoto' && anikotoState.episodes.length > 0) {
     const epSelect = document.getElementById('anime-ep-select');
@@ -1452,6 +1500,11 @@ async function playAnimeEpisodeNow(movieId) {
   // Direct HLS player
   if (source === 'direct') {
     playDirectHLS(movieId);
+    return;
+  }
+
+  if (source.startsWith('cv_')) {
+    playCinevaultProvider(source.replace('cv_', ''), movieId, ep);
     return;
   }
 
@@ -1924,14 +1977,18 @@ async function playAnimepaheEpisode(movieId, ep) {
 }
 
 // ============================================================
-// DIRECT HLS.js PLAYER — plays .m3u8 streams without iframes
+// DIRECT HLS.js PLAYER (Legacy - redirects to Cinevault Provider)
 // ============================================================
 async function playDirectHLS(movieId) {
+  playCinevaultProvider('anikoto', movieId, 1);
+}
+
+async function playCinevaultProvider(provider, movieId, ep) {
   const movie = appState.movies.find(m => m.id == movieId);
   if (!movie) return;
 
   const epSelect = document.getElementById('anime-ep-select');
-  const ep = epSelect ? parseInt(epSelect.value, 10) || 1 : 1;
+  if (!ep) ep = epSelect ? parseInt(epSelect.value, 10) || 1 : 1;
 
   // Destroy previous player
   _destroyCurrentPlayer('anime-player-container');
@@ -1939,63 +1996,77 @@ async function playDirectHLS(movieId) {
   const container = document.getElementById('anime-player-container');
   if (!container) return;
 
-  // Show loading
-  container.innerHTML =
-    '<div class="stream-loading-overlay" style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--text-muted);z-index:3;">' +
-    '<div class="loading-spinner" style="width:40px;height:40px;margin-bottom:10px;"></div>' +
-    '<span style="font-size:0.9rem;font-weight:600;">Fetching direct stream for Episode ' + ep + '...</span>' +
-    '<span style="font-size:0.78rem;opacity:0.6;margin-top:4px;">This uses HLS.js — no buffering!</span>' +
-    '</div>';
+  const lang = anikotoState.lang || 'sub';
 
-  // We need an AniList ID to call the stream endpoint
-  if (!activeAnimeAnilistId) {
-    // Try to resolve AniList ID if not yet available
-    let malId = null;
-    if (movie.anime_link) {
-      const malMatch = movie.anime_link.match(/anime\/(\d+)/);
-      if (malMatch) malId = malMatch[1];
-    }
-    if (malId) {
-      try {
-        const res = await fetch('/api/anilist/mal/' + malId);
-        const data = await res.json();
-        if (data.ok && data.anilist_id) {
-          activeAnimeAnilistId = data.anilist_id;
-        }
-      } catch (e) {
-        console.error('[Direct HLS] AniList resolution failed:', e);
-      }
-    }
-  }
-
-  if (!activeAnimeAnilistId) {
+  // Check if we have the provider and episode ID
+  if (!cinevaultEpisodes || !cinevaultEpisodes[provider]) {
     container.innerHTML =
       '<div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--text-muted);">' +
       '<span style="font-size:2rem;margin-bottom:10px;">❌</span>' +
-      '<span style="font-weight:600;font-size:0.9rem;">Could not resolve anime ID for direct streaming</span>' +
-      '<span style="font-size:0.78rem;opacity:0.6;margin-top:4px;">Try Videasy or Autoembed instead</span>' +
+      '<span style="font-weight:600;font-size:0.9rem;">Provider not available for this anime</span>' +
       '</div>';
     return;
   }
 
+  const epList = cinevaultEpisodes[provider].episodes[lang] || [];
+  const epData = epList.find(e => parseInt(e.number) === parseInt(ep));
+
+  if (!epData) {
+    container.innerHTML =
+      '<div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--text-muted);">' +
+      '<span style="font-size:2rem;margin-bottom:10px;">❌</span>' +
+      '<span style="font-weight:600;font-size:0.9rem;">Episode ' + ep + ' (' + lang.toUpperCase() + ') not found on ' + provider + '</span>' +
+      '<span style="font-size:0.78rem;opacity:0.6;margin-top:4px;">Try switching to SUB/DUB or another provider.</span>' +
+      '</div>';
+    return;
+  }
+
+  // The id from CineVault API looks like: "watch/anikoto/123/sub/anikoto-1"
+  // We need to extract the provider_ep_id from the end.
+  const idParts = epData.id.split('/');
+  const providerEpId = idParts[idParts.length - 1];
+
+  // Show loading
+  container.innerHTML =
+    '<div class="stream-loading-overlay" style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--text-muted);z-index:3;">' +
+    '<div class="loading-spinner" style="width:40px;height:40px;margin-bottom:10px;"></div>' +
+    '<span style="font-size:0.9rem;font-weight:600;">Fetching stream for Episode ' + ep + ' from ' + provider + '...</span>' +
+    '</div>';
+
   try {
-    const res = await fetch('/api/stream/' + activeAnimeAnilistId + '/' + ep);
+    const res = await fetch('/api/stream/provider/' + provider + '/' + activeAnimeAnilistId + '/' + lang + '/' + providerEpId);
     const data = await res.json();
 
     if (!data.ok || !data.sources || !data.sources.length) {
       container.innerHTML =
         '<div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--text-muted);">' +
         '<span style="font-size:2rem;margin-bottom:10px;">❌</span>' +
-        '<span style="font-weight:600;font-size:0.9rem;">No direct stream sources found for Episode ' + ep + '</span>' +
-        '<span style="font-size:0.78rem;opacity:0.6;margin-top:4px;">Try Videasy or Autoembed instead</span>' +
+        '<span style="font-weight:600;font-size:0.9rem;">No stream sources found for Episode ' + ep + '</span>' +
+        '<span style="font-size:0.78rem;opacity:0.6;margin-top:4px;">Try Videasy or another source instead</span>' +
         '</div>';
       return;
     }
 
-    // Pick the best source (first one, already sorted by quality)
-    const bestSource = data.sources[0];
+    // Pick the best source
+    let bestSource = data.sources[0];
+
+    // AnimeGG MP4s are often protected by anti-hotlinking. If embed is available, prefer it.
+    if (provider === 'animegg') {
+      const embedSrc = data.sources.find(s => s.type === 'embed' || String(s.url).includes('embed'));
+      if (embedSrc) bestSource = embedSrc;
+    }
+
     const videoUrl = bestSource.url;
     const isM3U8 = bestSource.isM3U8;
+    const streamType = bestSource.type;
+
+    if (streamType === 'embed' || String(videoUrl).includes('embed')) {
+      _injectIframeWithTimeout(container, videoUrl, 'Episode ' + ep + ' via ' + provider);
+      updateEpGridActive(ep);
+      showToast('▶ Playing Episode ' + ep + ' via ' + provider);
+      setTimeout(() => container.scrollIntoView({ behavior: 'smooth', block: 'center' }), 200);
+      return;
+    }
 
     // Build a native video player
     container.innerHTML =
