@@ -3,7 +3,7 @@ import {
   episodeTTL, jikanPageTTL,
 } from "./smartcache.js";
 import { getEpisodes as paheEpisodes    } from "../providers/animepahe.js";
-import { getEpisodes as mangaEpisodes   } from "../providers/allmanga.js";
+
 import { getEpisodes as reanimeEpisodes } from "../providers/reanime.js";
 import { getEpisodes as anikotoEpisodes } from "../providers/anikoto.js";
 import { getEpisodes as animeggEpisodes } from "../providers/animegg.js";
@@ -165,9 +165,9 @@ export async function buildEpisodesWithCache(anilistId, media, anizip) {
 
   const ctx = { media, anizip, jikanEps, maxPages: undefined };
 
-  const [pahe, manga, reanime, anikoto, animegg, anineko, anidbapp] = await Promise.all([
+  const [pahe, reanime, anikoto, animegg, anineko, anidbapp] = await Promise.all([
     safe("pahe",     () => withCache(`epv:pahe:${anilistId}`,    status, () => paheEpisodes(anilistId, ctx))),
-    safe("allmanga", () => withCache(`epv:manga:${anilistId}`,   status, () => mangaEpisodes(anilistId, ctx))),
+
     safe("reanime",  () => withCache(`epv:reanime:${anilistId}`, status, () => reanimeEpisodes(anilistId, ctx))),
     safe("anikoto",  () => withCache(`epv:anikoto:${anilistId}`, status, () => anikotoEpisodes(anilistId, ctx))),
     safe("animegg",  () => withCache(`epv:animegg:${anilistId}`, status, () => animeggEpisodes(anilistId, ctx))),
@@ -177,7 +177,7 @@ export async function buildEpisodesWithCache(anilistId, media, anizip) {
 
   return {
     animepahe: pahe.ok    ? pahe.data    : { error: pahe.error,    stack: pahe.stack },
-    allmanga:  manga.ok   ? manga.data   : { error: manga.error,   stack: manga.stack },
+
     reanime:   reanime.ok ? reanime.data : { error: reanime.error, stack: reanime.stack },
     anikoto:   anikoto.ok ? anikoto.data : { error: anikoto.error, stack: anikoto.stack },
     animegg:   animegg.ok ? animegg.data : { error: animegg.error, stack: animegg.stack },

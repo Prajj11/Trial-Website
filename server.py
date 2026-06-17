@@ -845,6 +845,12 @@ def get_episodes(anilist_id):
 def get_stream_provider(provider, anilist_id, audio, provider_ep_id):
     """
     Get streaming URLs for an episode via a specific provider on CineVault-API.
+
+    Handles the different response shapes from each provider:
+      - anineko/animegg/anidbapp: {streams: [{url, type, referer, ...}]}
+      - animepahe: {streams: [{url, type: "hls"/"embed", quality, referer, ...}]}
+      - reanime:  {streams: [...], stream_url, subtitles, ...}
+      - anikoto:  {ssub: {streams: [...]}} or {sdub: {streams: [...]}}
     """
     cache_key = f'stream:{provider}:{anilist_id}:{audio}:{provider_ep_id}'
     now = time.time()
@@ -855,7 +861,7 @@ def get_stream_provider(provider, anilist_id, audio, provider_ep_id):
 
     try:
         cinevault_url = f'http://localhost:4000/watch/{provider}/{anilist_id}/{audio}/{provider_ep_id}'
-        r = requests.get(cinevault_url, timeout=20)
+        r = requests.get(cinevault_url, timeout=30)
         if r.status_code != 200:
             return jsonify({'ok': False, 'error': f'Upstream error {r.status_code}', 'details': r.text}), 502
         info = r.json()
@@ -863,60 +869,145 @@ def get_stream_provider(provider, anilist_id, audio, provider_ep_id):
         return jsonify({'ok': False, 'error': str(e)}), 502
 
     sources = []
-    
-    # CineVault-API returns different shapes.
-    # E.g. {"ssub": {"streams": [...]}} or {"streams": [...]}
-    streams_arrays = []
-    if 'streams' in info:
-        streams_arrays.append(info['streams'])
-    if 'ssub' in info and 'streams' in info['ssub']:
-        streams_arrays.append(info['ssub']['streams'])
-    if 'sdub' in info and 'streams' in info['sdub']:
-        streams_arrays.append(info['sdub']['streams'])
+    subtitles = []
+    intro = None
+    outro = None
 
+    # --- Helper: normalise a single stream object into our format ---
+    def _add_stream(src, fallback_referer=''):
+        url = src.get('url', '')
+        quality = src.get('quality', 'auto')
+        stream_type = src.get('type', '')
+
+        # Infer quality from URL if not explicit
+        if quality in ('auto', '') and url:
+            if '1080' in url: quality = '1080p'
+            elif '720' in url: quality = '720p'
+            elif '480' in url: quality = '480p'
+            elif '360' in url: quality = '360p'
+
+        is_m3u8 = stream_type == 'hls' or src.get('isM3U8') or '.m3u8' in url
+        stream_referer = src.get('referer', src.get('embed', fallback_referer))
+
+        if url and is_m3u8:
+            proxied = url
+            if stream_referer:
+                proxied = f'/api/proxy/hls/manifest?url={requests.utils.quote(url)}&referer={requests.utils.quote(stream_referer)}'
+            sources.append({
+                'url': proxied,
+                'quality': quality,
+                'isM3U8': True,
+                'type': 'hls',
+                'server': src.get('server', src.get('name', provider)),
+            })
+        elif url:
+            sources.append({
+                'url': url,
+                'quality': quality,
+                'isM3U8': False,
+                'type': stream_type or ('embed' if 'embed' in url else 'mp4'),
+                'server': src.get('server', src.get('name', provider)),
+            })
+
+    # --- Collect stream arrays from the various response shapes ---
+    streams_arrays = []
+
+    # Shape: {streams: [...]}  (anineko, animepahe, reanime, animegg, anidbapp)
+    if 'streams' in info and isinstance(info['streams'], list):
+        streams_arrays.append(info['streams'])
+
+    # Shape: {ssub: {streams: [...]}} or {sdub: {streams: [...]}}  (anikoto)
+    for sub_key in ('ssub', 'sdub'):
+        if sub_key in info and isinstance(info[sub_key], dict):
+            sub = info[sub_key]
+            if 'streams' in sub and isinstance(sub['streams'], list):
+                streams_arrays.append(sub['streams'])
+            # Collect subtitles from anikoto
+            if 'subtitles' in sub and isinstance(sub['subtitles'], list):
+                subtitles.extend(sub['subtitles'])
+            # Collect intro/outro
+            if not intro and sub.get('intro'):
+                intro = sub['intro']
+            if not outro and sub.get('outro'):
+                outro = sub['outro']
+
+    # Shape: top-level list (shouldn't happen normally, but handle it)
     if isinstance(info, list):
         streams_arrays.append(info)
 
+    # --- Process all collected stream arrays ---
+    fallback_ref = info.get('headers', {}).get('Referer', '') if isinstance(info, dict) else ''
     for arr in streams_arrays:
         for src in arr:
-            url = src.get('url', '')
-            quality = src.get('quality', 'auto')
-            if '1080' in url: quality = '1080p'
-            elif '720' in url: quality = '720p'
-            
-            is_m3u8 = src.get('type') == 'hls' or src.get('isM3U8') or '.m3u8' in url
-            stream_referer = src.get('referer', info.get('headers', {}).get('Referer', ''))
-            
-            if url and is_m3u8:
-                if stream_referer:
-                    url = f'/api/proxy/hls/manifest?url={requests.utils.quote(url)}&referer={requests.utils.quote(stream_referer)}'
-                sources.append({
-                    'url': url,
-                    'quality': quality,
-                    'isM3U8': True,
-                    'type': 'hls'
-                })
-            elif url:
-                sources.append({
-                    'url': url,
-                    'quality': quality,
-                    'isM3U8': False,
-                    'type': src.get('type', 'mp4')
-                })
+            _add_stream(src, fallback_ref)
+
+    # --- Reanime: also has a top-level stream_url (direct HLS URL) ---
+    if isinstance(info, dict) and info.get('stream_url'):
+        stream_url = info['stream_url']
+        is_hls = '.m3u8' in stream_url
+        if is_hls:
+            proxied = f'/api/proxy/hls/manifest?url={requests.utils.quote(stream_url)}&referer={requests.utils.quote("https://reanime.to/")}'
+            # Insert at front — it's the best quality direct link
+            sources.insert(0, {
+                'url': proxied,
+                'quality': 'auto',
+                'isM3U8': True,
+                'type': 'hls',
+                'server': 'Reanime-direct',
+            })
+        else:
+            sources.insert(0, {
+                'url': stream_url,
+                'quality': 'auto',
+                'isM3U8': False,
+                'type': 'mp4',
+                'server': 'Reanime-direct',
+            })
+
+    # --- Collect subtitles from reanime/other providers ---
+    if isinstance(info, dict):
+        if 'subtitles' in info and isinstance(info['subtitles'], list):
+            subtitles.extend(info['subtitles'])
+        if not intro and info.get('intro'):
+            intro = info['intro']
+        if not outro and info.get('outro'):
+            outro = info['outro']
+        # Reanime also has intro_start/intro_end/outro_start/outro_end
+        if not intro and info.get('intro_start') is not None and info.get('intro_end') is not None:
+            intro = {'start': info['intro_start'], 'end': info['intro_end']}
+        if not outro and info.get('outro_start') is not None and info.get('outro_end') is not None:
+            outro = {'start': info['outro_start'], 'end': info['outro_end']}
 
     if not sources:
         return jsonify({'ok': False, 'error': 'No streaming sources found', 'provider': provider, 'anilist_id': anilist_id})
 
-    # Sort
-    quality_order = {'1080p': 0, '720p': 1, '480p': 2, '360p': 3, 'default': 4, 'auto': -1, 'backup': 5}
-    sources.sort(key=lambda s: (0 if s['isM3U8'] else 1, quality_order.get(s['quality'], 3)))
+    # --- Deduplicate sources by URL ---
+    seen_urls = set()
+    unique_sources = []
+    for s in sources:
+        if s['url'] not in seen_urls:
+            seen_urls.add(s['url'])
+            unique_sources.append(s)
+    sources = unique_sources
+
+    # --- Sort: prefer HLS, then by quality ---
+    quality_order = {'1080p': 0, '720p': 1, '480p': 2, '360p': 3, 'default': 4, 'auto': 5, 'backup': 6}
+    sources.sort(key=lambda s: (0 if s['isM3U8'] else 1, quality_order.get(s['quality'], 4)))
 
     result = {
         'ok': True,
         'sources': sources,
-        'referer': info.get('headers', {}).get('Referer', ''),
-        'anilist_id': anilist_id
+        'referer': info.get('headers', {}).get('Referer', '') if isinstance(info, dict) else '',
+        'anilist_id': anilist_id,
+        'provider': provider,
     }
+    if subtitles:
+        result['subtitles'] = subtitles
+    if intro:
+        result['intro'] = intro
+    if outro:
+        result['outro'] = outro
+
     _stream_cache[cache_key] = (result, now)
     return jsonify(result)
 

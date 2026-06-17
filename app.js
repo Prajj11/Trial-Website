@@ -1079,22 +1079,7 @@ function renderCinevaultProviders() {
   const container = document.getElementById('anime-source-buttons');
   if (!container || !cinevaultEpisodes) return;
 
-  const validProviders = ['animepahe', 'allmanga', 'reanime', 'anikoto', 'animegg', 'anineko', 'anidbapp'];
-  const providerNames = {
-    animepahe: '🌸 AnimePahe',
-    allmanga: '📘 AllManga',
-    reanime: '🔥 Reanime',
-    anikoto: '▶ Anikoto',
-    animegg: '⚡ AnimeGG',
-    anineko: '🐱 AniNeko',
-    anidbapp: '📺 AniDB App'
-  };
-
-  let html = '';
-  html += '<button class="qbt-btn anime-src-btn" data-source="videasy" style="flex:1;min-width:80px;padding:8px 12px;font-size:0.82rem;background:var(--bg-card2);border:1px solid var(--border);color:var(--text-primary);" onclick="switchAnimeSource(\'videasy\',' + currentAnimeMovieId + ')">▶ Videasy</button>';
-  html += '<button class="qbt-btn anime-src-btn" data-source="vidsrc" style="flex:1;min-width:80px;padding:8px 12px;font-size:0.82rem;background:var(--bg-card2);border:1px solid var(--border);color:var(--text-primary);" onclick="switchAnimeSource(\'vidsrc\',' + currentAnimeMovieId + ')">▶ VidSrc</button>';
-  html += '<button class="qbt-btn anime-src-btn" data-source="torrent" style="flex:1;min-width:80px;padding:8px 12px;font-size:0.82rem;background:var(--bg-card2);border:1px solid var(--border);color:var(--text-primary);" onclick="switchAnimeSource(\'torrent\',' + currentAnimeMovieId + ')">🧲 Torrent Player</button>';
-
+  const validProviders = ['animepahe', 'reanime', 'anikoto', 'animegg', 'anineko', 'anidbapp'];
   let firstProvider = null;
 
   for (const p of validProviders) {
@@ -1103,12 +1088,16 @@ function renderCinevaultProviders() {
       const dubLen = (cinevaultEpisodes[p].episodes.dub || []).length;
       if (subLen > 0 || dubLen > 0) {
         if (!firstProvider) firstProvider = 'cv_' + p;
-        html = '<button class="qbt-btn anime-src-btn" data-source="cv_' + p + '" style="flex:1;min-width:80px;padding:8px 12px;font-size:0.82rem;background:var(--bg-card2);border:1px solid var(--border);color:var(--text-primary);" onclick="switchAnimeSource(\'cv_' + p + '\',' + currentAnimeMovieId + ')">' + providerNames[p] + '</button>' + html;
+        
+        const btn = container.querySelector(`[data-source="cv_${p}"]`);
+        if (btn) {
+          btn.title = `${subLen + dubLen} episodes available`;
+          // Add a subtle badge or styling if desired, but for now just marking it as loaded
+          btn.style.borderColor = 'rgba(16, 185, 129, 0.4)'; 
+        }
       }
     }
   }
-
-  container.innerHTML = html;
 
   if (activeAnimeSource === 'direct' && firstProvider) {
     activeAnimeSource = firstProvider;
@@ -1143,7 +1132,11 @@ function buildAnimeStreamSection(movie) {
     '<button class="qbt-btn anime-src-btn" data-source="videasy" style="flex:1;min-width:80px;padding:8px 12px;font-size:0.82rem;background:var(--bg-card2);border:1px solid var(--border);color:var(--text-primary);" onclick="switchAnimeSource(\'videasy\',' + movie.id + ')">▶ Videasy</button>' +
     '<button class="qbt-btn anime-src-btn" data-source="vidsrc" style="flex:1;min-width:80px;padding:8px 12px;font-size:0.82rem;background:var(--bg-card2);border:1px solid var(--border);color:var(--text-primary);" onclick="switchAnimeSource(\'vidsrc\',' + movie.id + ')">▶ VidSrc</button>' +
     '<button class="qbt-btn anime-src-btn" data-source="animepahe" style="flex:1;min-width:80px;padding:8px 12px;font-size:0.82rem;background:var(--bg-card2);border:1px solid var(--border);color:var(--text-primary);" onclick="switchAnimeSource(\'animepahe\',' + movie.id + ')">🌸 AnimePahe</button>' +
+    '<button class="qbt-btn anime-src-btn" data-source="cv_reanime" style="flex:1;min-width:80px;padding:8px 12px;font-size:0.82rem;background:var(--bg-card2);border:1px solid var(--border);color:var(--text-primary);" onclick="switchAnimeSource(\'cv_reanime\',' + movie.id + ')">🔥 Reanime</button>' +
     '<button class="qbt-btn anime-src-btn" data-source="anikoto" style="flex:1;min-width:80px;padding:8px 12px;font-size:0.82rem;background:var(--bg-card2);border:1px solid var(--border);color:var(--text-primary);" id="anikoto-src-btn" onclick="switchAnimeSource(\'anikoto\',' + movie.id + ')">▶ Anikoto</button>' +
+    '<button class="qbt-btn anime-src-btn" data-source="cv_animegg" style="flex:1;min-width:80px;padding:8px 12px;font-size:0.82rem;background:var(--bg-card2);border:1px solid var(--border);color:var(--text-primary);" onclick="switchAnimeSource(\'cv_animegg\',' + movie.id + ')">⚡ AnimeGG</button>' +
+    '<button class="qbt-btn anime-src-btn" data-source="cv_anineko" style="flex:1;min-width:80px;padding:8px 12px;font-size:0.82rem;background:var(--bg-card2);border:1px solid var(--border);color:var(--text-primary);" onclick="switchAnimeSource(\'cv_anineko\',' + movie.id + ')">🐱 AniNeko</button>' +
+    '<button class="qbt-btn anime-src-btn" data-source="cv_anidbapp" style="flex:1;min-width:80px;padding:8px 12px;font-size:0.82rem;background:var(--bg-card2);border:1px solid var(--border);color:var(--text-primary);" onclick="switchAnimeSource(\'cv_anidbapp\',' + movie.id + ')">📺 AniDB App</button>' +
     '<button class="qbt-btn anime-src-btn" data-source="torrent" style="flex:1;min-width:80px;padding:8px 12px;font-size:0.82rem;background:var(--bg-card2);border:1px solid var(--border);color:var(--text-primary);" onclick="switchAnimeSource(\'torrent\',' + movie.id + ')">🧲 Torrent Player</button>' +
     '</div>' +
     // Episode controls: dropdown + sub/dub

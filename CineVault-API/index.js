@@ -1,7 +1,7 @@
 import { getMedia }                from "./core/anilist.js";
 import { mapAnimeIds }             from "./core/mapper.js";
 import paheHandler                 from "./providers/animepahe.js";
-import mangaHandler                from "./providers/allmanga.js";
+
 import reanimeHandler              from "./providers/reanime.js";
 import anikotoHandler              from "./providers/anikoto.js";
 import animeggHandler              from "./providers/animegg.js";
@@ -111,14 +111,7 @@ export default {
       );
     }
 
-    m = path.match(/^\/watch\/allmanga\/(\d+)\/(sub|dub)\/allmanga-(\d+)\/?$/);
-    if (m) {
-      const [, id, audio, ep] = m;
-      return cachedWatch(
-        `watch:manga:${id}:${audio}:${ep}`,
-        () => mangaHandler.fetch(request)
-      );
-    }
+
 
     m = path.match(/^\/watch\/reanime\/(\d+)\/(sub|dub)\/reanime-(\d+)\/?$/);
     if (m) {
@@ -176,7 +169,7 @@ export default {
       cache: _CACHE_ENABLED,
       providers: [
         "animepahe",
-        "allmanga",
+
         "reanime",
         "anikoto",
         "animegg",
@@ -187,7 +180,7 @@ export default {
         "/map/:anilistId",
         "/episodes/:anilistId",
         "/watch/animepahe/:id/sub|dub/animepahe-:ep",
-        "/watch/allmanga/:id/sub|dub/allmanga-:ep",
+
         "/watch/reanime/:id/sub|dub/reanime-:ep",
         "/stream/reanime/:id/sub|dub/:ep",
         "/watch/anikoto/:id/sub|dub/anikoto-:ep",
