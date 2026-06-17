@@ -1,0 +1,26 @@
+{
+  "name": "datasets",
+  "version": "1.0.0",
+  "description": "CineVault is a premium, high-performance web application for discovering and streaming movies, TV shows, and anime. Built with a robust **Flask + SQLite** backend and a stunning, responsive **vanilla HTML/CSS/JS** frontend, CineVault delivers a beautiful, immersive, and fast cinematic experience.",
+  "main": "app.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Prajj11/Datasets.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/Prajj11/Datasets/issues"
+  },
+  "homepage": "https://github.com/Prajj11/Datasets#readme",
+  "dependencies": {
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "webtorrent": "^3.0.16"
+  }
+}
