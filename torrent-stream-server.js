@@ -85,7 +85,9 @@ app.get('/stream/:infoHash/:filename', (req, res) => {
             'Content-Type': 'video/mp4'
         });
         const stream = file.createReadStream();
-        stream.pipe(res);
+        stream.pipe(res).on('error', (err) => {
+            // Ignore premature close errors (client disconnected)
+        });
         return;
     }
 
@@ -102,7 +104,9 @@ app.get('/stream/:infoHash/:filename', (req, res) => {
     });
 
     const stream = file.createReadStream({ start, end });
-    stream.pipe(res);
+    stream.pipe(res).on('error', (err) => {
+        // Ignore premature close errors (client disconnected)
+    });
 });
 
 const PORT = 9411;

@@ -822,7 +822,7 @@ function _injectIframeWithTimeout(container, streamUrl, displayLabel, fallbackFn
     '</div>' +
     '<iframe src="' + streamUrl + '" ' +
     'style="position:absolute;inset:0;width:100%;height:100%;border:none;z-index:2;" ' +
-    'allowfullscreen allow="autoplay; encrypted-media; picture-in-picture; fullscreen" ' +
+    'allowfullscreen="true" webkitallowfullscreen="true" mozallowfullscreen="true" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" ' +
     'referrerpolicy="no-referrer">' +
     '</iframe>';
 
