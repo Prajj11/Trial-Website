@@ -709,6 +709,7 @@ function openMovieModal(id) {
       '<button class="qbt-btn stream-source-btn active" data-source="videasy" style="flex:1;background:linear-gradient(135deg, #10b981, #059669);" onclick="switchStreamSource(\'videasy\',' + movie.id + ')">▶ Videasy</button>' +
       '<button class="qbt-btn stream-source-btn" data-source="vidsrc" style="flex:1;background:var(--bg-card2);border:1px solid var(--border);color:var(--text-primary);" onclick="switchStreamSource(\'vidsrc\',' + movie.id + ')">▶ VidSrc</button>' +
       '<button class="qbt-btn stream-source-btn" data-source="embed" style="flex:1;background:var(--bg-card2);border:1px solid var(--border);color:var(--text-primary);" onclick="switchStreamSource(\'embed\',' + movie.id + ')">▶ MultiEmbed</button>' +
+      '<button class="qbt-btn stream-source-btn" data-source="torrent" style="flex:1;background:var(--bg-card2);border:1px solid var(--border);color:var(--text-primary);" onclick="switchStreamSource(\'torrent\',' + movie.id + ')">🧲 Torrent</button>' +
       '</div>' +
       '<div id="player-container" style="width:100%;aspect-ratio:16/9;background:#000;border-radius:var(--radius-md);overflow:hidden;border:1px solid var(--border);position:relative;box-shadow:0 10px 30px rgba(0,0,0,0.5);">' +
       '<div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--text-muted);">' +
@@ -909,6 +910,7 @@ function switchStreamSource(source, movieId) {
 
   // Destroy previous player cleanly before creating new
   _destroyCurrentPlayer('player-container');
+  if (_torrentClient) { _torrentClient.destroy(); _torrentClient = null; }
 
   // Update button active states
   document.querySelectorAll('.stream-source-btn').forEach(btn => {
@@ -924,6 +926,11 @@ function switchStreamSource(source, movieId) {
       btn.style.borderColor = 'var(--border)';
     }
   });
+
+  if (source === 'torrent') {
+    playMovieTorrent(movieId);
+    return;
+  }
 
   // Get episode number for anime
   let ep = 1;
@@ -1383,6 +1390,35 @@ async function playTorrentEpisode(movieId, ep) {
     return;
   }
   await streamMagnet(magnet, 'anime-player-container');
+}
+
+async function playMovieTorrent(movieId) {
+  const movie = appState.movies.find(m => m.id == movieId);
+  if (!movie) return;
+  const title = movie.title;
+
+  const container = document.getElementById('player-container');
+  if (container) setTimeout(() => container.scrollIntoView({ behavior: 'smooth', block: 'center' }), 100);
+
+  showToast('🔎 Searching YTS for "' + title + '"...');
+  const result = await fetchYTSTorrents(movie);
+  
+  if (!result || !result.torrents.length) {
+    showToast('❌ No torrent found for movie');
+    if (container) {
+      container.innerHTML =
+        '<div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--text-muted);gap:10px;">' +
+        '<span style="font-size:2.5rem;">🔍</span>' +
+        '<span style="font-weight:700;font-size:0.95rem;color:var(--text-primary);">No torrent found</span>' +
+        '<span style="font-size:0.8rem;max-width:300px;text-align:center;">Could not find "' + escapeHtml(title) + '" on YTS. Try another source.</span>' +
+        '</div>';
+    }
+    return;
+  }
+  
+  const best = result.torrents[0];
+  const magnet = buildMagnet(best.hash, movie.title);
+  await streamMagnet(magnet, 'player-container');
 }
 
 // Switch source for anime streaming
