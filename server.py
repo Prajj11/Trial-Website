@@ -27,8 +27,9 @@ import subprocess
 import atexit
 import threading
 import requests
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, send_from_directory, Response
 from flask_cors import CORS
+from urllib.parse import urlparse
 
 # --- Config ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -257,15 +258,35 @@ def get_languages():
 
 @app.route('/api/genres', methods=['GET'])
 def get_genres():
-    """Get all distinct genres with counts."""
+    """Get distinct genres with counts, optionally filtered by content type."""
+    content_type = request.args.get('type', '').strip()
     conn = get_db()
     try:
-        rows = conn.execute('''
-            SELECT genre, COUNT(*) as count
-            FROM genres
-            GROUP BY genre
-            ORDER BY genre ASC
-        ''').fetchall()
+        if content_type == 'movie':
+            rows = conn.execute('''
+                SELECT g.genre, COUNT(*) as count
+                FROM genres g
+                JOIN content c ON g.content_id = c.id
+                WHERE c.content_type = 'movie'
+                GROUP BY g.genre
+                ORDER BY g.genre ASC
+            ''').fetchall()
+        elif content_type == 'anime':
+            rows = conn.execute('''
+                SELECT g.genre, COUNT(*) as count
+                FROM genres g
+                JOIN content c ON g.content_id = c.id
+                WHERE c.content_type = 'anime'
+                GROUP BY g.genre
+                ORDER BY g.genre ASC
+            ''').fetchall()
+        else:
+            rows = conn.execute('''
+                SELECT genre, COUNT(*) as count
+                FROM genres
+                GROUP BY genre
+                ORDER BY genre ASC
+            ''').fetchall()
         return jsonify([row_to_dict(r) for r in rows])
     finally:
         conn.close()
@@ -330,6 +351,83 @@ def get_by_language(lang_code):
             ORDER BY popularity DESC
             LIMIT ?
         ''', (lang_code, limit)).fetchall()
+        items = [row_to_dict(r) for r in rows]
+        items = enrich_with_genres(conn, items)
+        return jsonify(items)
+    finally:
+        conn.close()
+
+
+@app.route('/api/poster-proxy')
+def poster_proxy():
+    """Proxy images from domains with hotlink protection (MAL, Amazon CDN)."""
+    url = request.args.get('url', '')
+    if not url:
+        return 'Missing url parameter', 400
+
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return 'Invalid URL', 400
+
+    allowed_domains = ['cdn.myanimelist.net', 'm.media-amazon.com', 'upload.wikimedia.org']
+    if parsed.hostname not in allowed_domains:
+        return 'Domain not allowed', 403
+
+    # Set referer based on domain to bypass hotlink protection
+    referer = ''
+    if 'myanimelist' in (parsed.hostname or ''):
+        referer = 'https://myanimelist.net/'
+
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
+        }
+        if referer:
+            headers['Referer'] = referer
+
+        resp = requests.get(url, headers=headers, stream=True, timeout=10)
+        if resp.status_code != 200:
+            return 'Upstream error', resp.status_code
+
+        content_type = resp.headers.get('Content-Type', 'image/jpeg')
+        return Response(
+            resp.iter_content(chunk_size=8192),
+            content_type=content_type,
+            headers={
+                'Cache-Control': 'public, max-age=604800',
+                'Access-Control-Allow-Origin': '*'
+            }
+        )
+    except requests.Timeout:
+        return 'Upstream timeout', 504
+    except Exception as e:
+        return f'Proxy error: {e}', 502
+
+
+@app.route('/api/movies/batch', methods=['GET'])
+def get_movies_batch():
+    """Fetch multiple movies by IDs (for watchlist)."""
+    ids_str = request.args.get('ids', '')
+    if not ids_str:
+        return jsonify([])
+
+    try:
+        ids = [int(x.strip()) for x in ids_str.split(',') if x.strip()]
+    except ValueError:
+        return jsonify({'error': 'Invalid IDs'}), 400
+
+    if not ids or len(ids) > 100:
+        return jsonify([])
+
+    conn = get_db()
+    try:
+        placeholders = ','.join('?' * len(ids))
+        rows = conn.execute(
+            f'SELECT * FROM content WHERE id IN ({placeholders})',
+            ids
+        ).fetchall()
         items = [row_to_dict(r) for r in rows]
         items = enrich_with_genres(conn, items)
         return jsonify(items)

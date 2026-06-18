@@ -3,7 +3,7 @@
    ====================================================== */
 
 // --- Config ---
-const CONFIG = { PAGE_SIZE: 24, API_BASE: '/api', JSON_URL: '/api/movies/all' };
+const CONFIG = { PAGE_SIZE: 24, API_BASE: '/api' };
 
 // --- Image fallback helper ---
 // Tries to build a working poster URL when the primary one fails.
@@ -54,8 +54,31 @@ let appState = {
   watchlist: JSON.parse(getStorage('cv_watchlist', '[]')),
   theme: getStorage('cv_theme', 'dark'),
   viewMode: getStorage('cv_view', 'grid'),
-  activeLanguage: null
+  activeLanguage: null,
+  movieGenres: new Set(),
+  animeGenres: new Set(),
+  moviesById: {},
+  languagesData: [],
+  serverTotal: 0,
+  serverTotalPages: 0
 };
+
+// --- Data cache helpers ---
+function cacheMovies(items) {
+  items.forEach(m => { appState.moviesById[m.id] = m; });
+}
+
+function getProxiedPosterUrl(url) {
+  if (!url) return '';
+  try {
+    const u = new URL(url);
+    const proxyDomains = ['cdn.myanimelist.net', 'm.media-amazon.com'];
+    if (proxyDomains.some(d => u.hostname === d || u.hostname.endsWith('.' + d))) {
+      return CONFIG.API_BASE + '/poster-proxy?url=' + encodeURIComponent(url);
+    }
+  } catch (e) { }
+  return url;
+}
 
 // ============================================================
 // TORRENT ENGINE — YTS API + qBittorrent Integration
@@ -95,14 +118,14 @@ function openKwikDownload(title, episode) {
 }
 
 function downloadAnimeEpisode(movieId, episode) {
-  const movie = appState.movies.find(m => m.id == movieId);
+  const movie = appState.moviesById[movieId];
   if (!movie) return;
   const title = movie.title;
   openKwikDownload(title, episode);
 }
 
 function renderEpisodeDownloadGrid(movieId, startEp, endEp) {
-  const movie = appState.movies.find(m => m.id == movieId);
+  const movie = appState.moviesById[movieId];
   if (!movie) return;
   const container = document.getElementById('kwik-episode-grid');
   if (!container) return;
@@ -180,7 +203,7 @@ function openInQBittorrent(magnetUrl, label) {
 }
 
 async function downloadWithQBittorrent(movieId) {
-  const movie = appState.movies.find(m => m.id == movieId);
+  const movie = appState.moviesById[movieId];
   if (!movie) return;
 
   const btn = document.getElementById('qbt-download-btn');
@@ -282,10 +305,9 @@ function toggleWatchlist(id) {
   else { appState.watchlist.push(numId); showToast('Added to Watchlist'); }
   localStorage.setItem('cv_watchlist', JSON.stringify(appState.watchlist));
   updateWatchlistUI();
-  const s = (appState.currentPage - 1) * CONFIG.PAGE_SIZE;
-  renderGrid(appState.filtered.slice(s, s + CONFIG.PAGE_SIZE), 'movies-grid');
+  // Re-render current view
+  if (document.getElementById('movies-grid')) renderGrid(appState.filtered, 'movies-grid');
   renderTrending();
-  if (appState.activeLanguage) renderLanguageSection(appState.activeLanguage);
 }
 
 function updateWatchlistUI() {
@@ -302,8 +324,7 @@ function clearWatchlist() {
   appState.watchlist = [];
   localStorage.setItem('cv_watchlist', '[]');
   updateWatchlistUI();
-  const s = (appState.currentPage - 1) * CONFIG.PAGE_SIZE;
-  renderGrid(appState.filtered.slice(s, s + CONFIG.PAGE_SIZE), 'movies-grid');
+  if (document.getElementById('movies-grid')) renderGrid(appState.filtered, 'movies-grid');
   renderTrending();
   showToast('Watchlist cleared');
 }
@@ -330,7 +351,8 @@ function buildMovieCard(movie) {
   const h1 = numId % 360;
   const h2 = (h1 + 60) % 360;
   const grad = 'linear-gradient(135deg, hsl(' + h1 + ',80%,30%), hsl(' + h2 + ',80%,20%))';
-  const hasPoster = !!movie.poster_url;
+  const posterUrl = getProxiedPosterUrl(movie.poster_url);
+  const hasPoster = !!posterUrl;
   const genresHtml = (movie.genres || []).slice(0, 2).map(g => '<span class="card-genre">' + g + '</span>').join('');
   const raw = movie.title.toLowerCase().replace(/[^a-z0-9]+/g, '-');
 
@@ -344,7 +366,7 @@ function buildMovieCard(movie) {
 
   return '<div class="movie-card ' + (isAnime ? 'anime-card' : '') + '" role="button" tabindex="0" aria-label="View ' + escapeHtml(movie.title) + '" onclick="openMovieModal(' + movie.id + ')">' +
     '<div class="card-poster">' +
-    (hasPoster ? '<img src="' + movie.poster_url + '" class="poster-img" alt="' + escapeHtml(movie.title) + '" loading="lazy" referrerpolicy="no-referrer" onerror="handlePosterError(this)">' : '') +
+    (hasPoster ? '<img src="' + posterUrl + '" class="poster-img" alt="' + escapeHtml(movie.title) + '" loading="lazy" referrerpolicy="no-referrer" onerror="handlePosterError(this)">' : '') +
     '<div class="poster-fallback" style="' + (hasPoster ? 'display:none;' : 'display:flex;') + 'background:' + grad + '">' +
     '<span class="fallback-emoji" style="text-shadow:0 4px 10px rgba(0,0,0,0.5)">' + emoji + '</span>' +
     '<span class="fallback-title" style="text-align:center;padding:0 10px;font-weight:800;font-size:1.1rem;line-height:1.2;text-shadow:0 2px 4px rgba(0,0,0,0.5)">' + escapeHtml(movie.title.substring(0, 40)) + '</span>' +
@@ -377,13 +399,11 @@ function renderGrid(movies, containerId) {
   el.innerHTML = movies.map(m => buildMovieCard(m)).join('');
 }
 
-function renderTrending() {
+function renderTrending(data) {
   const el = document.getElementById('trending-strip');
   if (!el) return;
-  // Use cached trending list if available (avoid re-sorting 19k records on every call)
-  if (!appState.trending) {
-    appState.trending = [...appState.movies].sort((a, b) => b.popularity - a.popularity).slice(0, 15);
-  }
+  if (data) { appState.trending = data; cacheMovies(data); }
+  if (!appState.trending) return;
   el.innerHTML = appState.trending.map(m => buildMovieCard(m)).join('');
 }
 
@@ -396,7 +416,7 @@ function renderWatchlistSection() {
     if (emptyState) { container.appendChild(emptyState); emptyState.style.display = 'flex'; }
   } else {
     if (emptyState) emptyState.style.display = 'none';
-    const wlMovies = appState.watchlist.map(id => appState.movies.find(m => m.id == id)).filter(Boolean);
+    const wlMovies = appState.watchlist.map(id => appState.moviesById[id]).filter(Boolean);
     renderGrid(wlMovies, 'watchlist-grid');
   }
 }
@@ -405,6 +425,11 @@ function renderWatchlistSection() {
 // FILTER & PAGINATION
 // ============================================================
 function applyFilters() {
+  const typeEl = document.getElementById('f-type');
+  const typeFilter = typeEl ? typeEl.value : '';
+
+  updateGenreDropdown(typeFilter);
+
   const searchEl = document.getElementById('hero-search');
   const searchQ = searchEl ? searchEl.value.toLowerCase().trim() : '';
   const genreEl = document.getElementById('f-genre');
@@ -412,13 +437,11 @@ function applyFilters() {
   const rankEl = document.getElementById('f-rating');
   const yearEl = document.getElementById('f-year');
   const sortEl = document.getElementById('f-sort');
-  const typeEl = document.getElementById('f-type');
   const genre = genreEl ? genreEl.value : '';
   const lang = langEl ? langEl.value : '';
   const rank = rankEl ? rankEl.value : '';
   const yearGroup = yearEl ? yearEl.value : '';
   const sort = sortEl ? sortEl.value : 'popularity';
-  const typeFilter = typeEl ? typeEl.value : '';
 
   let result = appState.movies.filter(m => {
     if (typeFilter === 'movie' && m.content_type === 'anime') return false;
@@ -527,33 +550,81 @@ function resetFilters() {
 // ============================================================
 // FILTER DROPDOWNS
 // ============================================================
-function populateFilterDropdowns() {
-  const genres = new Set();
-  const langs = {};
-  // Single pass instead of two separate forEach calls
-  appState.movies.forEach(m => {
-    (m.genres || []).forEach(g => genres.add(g));
-    langs[m.original_language] = (langs[m.original_language] || 0) + 1;
-  });
-
+function updateGenreDropdown(typeFilter) {
   const gSelect = document.getElementById('f-genre');
-  const gTabs = document.getElementById('genre-quick-tabs');
-  Array.from(genres).sort().forEach(g => {
-    if (gSelect) gSelect.innerHTML += '<option value="' + g + '">' + (GENRE_ICON[g] || '') + ' ' + g + '</option>';
-  });
-  if (gTabs) {
-    ['Action', 'Comedy', 'Drama', 'Science Fiction', 'Romance', 'Horror'].forEach(g => {
-      if (genres.has(g)) gTabs.innerHTML += '<button class="genre-tab" onclick="window.location.href=\'movies.html\'" role="tab">' + (GENRE_ICON[g] || '') + ' ' + g + '</button>';
-    });
+  if (!gSelect) return;
+
+  const currentVal = gSelect.value;
+  let genresToDraw = new Set();
+
+  if (typeFilter === 'anime') {
+    genresToDraw = appState.animeGenres;
+  } else {
+    // If format is movie or empty, strictly show movie genres.
+    genresToDraw = appState.movieGenres;
   }
 
-  const lSelect = document.getElementById('f-lang');
-  Object.entries(langs).sort((a, b) => b[1] - a[1]).forEach(([c, num]) => {
-    const info = getLangInfo(c);
-    if (lSelect) lSelect.innerHTML += '<option value="' + c + '">' + info.flag + ' ' + info.name + ' (' + num + ')</option>';
+  let html = '<option value="">All Genres</option>';
+  Array.from(genresToDraw).sort().forEach(g => {
+    html += '<option value="' + g + '">' + (GENRE_ICON[g] || '') + ' ' + g + '</option>';
   });
+  gSelect.innerHTML = html;
 
-  renderLanguagePills('all');
+  if (genresToDraw.has(currentVal)) {
+    gSelect.value = currentVal;
+  } else {
+    gSelect.value = '';
+  }
+}
+
+async function populateFilterDropdowns() {
+  try {
+    const [movieGenresRes, animeGenresRes, langsRes] = await Promise.all([
+      fetch(CONFIG.API_BASE + '/genres?type=movie'),
+      fetch(CONFIG.API_BASE + '/genres?type=anime'),
+      fetch(CONFIG.API_BASE + '/languages')
+    ]);
+
+    const movieGenresData = await movieGenresRes.json();
+    const animeGenresData = await animeGenresRes.json();
+    appState.languagesData = await langsRes.json();
+
+    appState.movieGenres.clear();
+    appState.animeGenres.clear();
+    movieGenresData.forEach(g => appState.movieGenres.add(g.genre));
+    animeGenresData.forEach(g => appState.animeGenres.add(g.genre));
+
+    const typeEl = document.getElementById('f-type');
+    const typeFilter = typeEl ? typeEl.value : '';
+    updateGenreDropdown(typeFilter);
+
+    // Language dropdown (browse page)
+    const lSelect = document.getElementById('f-lang');
+    if (lSelect) {
+      lSelect.innerHTML = '<option value="">All Languages</option>';
+      appState.languagesData.forEach(l => {
+        const info = getLangInfo(l.code);
+        lSelect.innerHTML += '<option value="' + l.code + '">' + info.flag + ' ' + info.name + ' (' + l.count + ')</option>';
+      });
+    }
+
+    // Genre quick tabs (home page)
+    const gTabs = document.getElementById('genre-quick-tabs');
+    if (gTabs) {
+      ['Action', 'Comedy', 'Drama', 'Science Fiction', 'Romance', 'Horror'].forEach(g => {
+        if (appState.movieGenres.has(g)) {
+          gTabs.innerHTML += '<button class="genre-tab" onclick="window.location.href=\'movies.html\'" role="tab">' + (GENRE_ICON[g] || '') + ' ' + g + '</button>';
+        }
+      });
+    }
+
+    // Language pills (home page)
+    if (document.getElementById('language-pills')) {
+      renderLanguagePills('all');
+    }
+  } catch (err) {
+    console.error('Failed to populate filter dropdowns:', err);
+  }
 }
 
 // ============================================================
@@ -595,23 +666,13 @@ const handleSearchInput = debounce(function (e) {
     '<div class="sugg-poster">' + (m.poster_url ? '<img src="' + m.poster_url + '" style="width:100%;height:100%;object-fit:cover;border-radius:6px" alt="" referrerpolicy="no-referrer" onerror="this.style.display=\'none\'">' : getEmojiForMovie(m)) + '</div>' +
     '<div class="sugg-info">' +
     '<div class="sugg-title">' + escapeHtml(m.title) + '</div>' +
-    '<div class="sugg-meta">' + getYear(m.release_date) + ' • ' + m.original_language.toUpperCase() + ' • ⭐ ' + parseFloat(m.vote_average || 0).toFixed(1) + '</div>' +
-    '</div>' +
-    '</div>'
-  ).join('');
-  suggBox.style.display = 'block';
-}, 250);
-
-// ============================================================
-// LANGUAGES SECTION
-// ============================================================
-function renderLanguagePills(regionFilter) {
-  const langs = {};
-  appState.movies.forEach(m => { langs[m.original_language] = (langs[m.original_language] || 0) + 1; });
+    '<div class="sugg-meta">' + getYear(m.release_date) + ' • ' + m.original_language.toUpperCase() + ' �function renderLanguagePills(regionFilter) {
   const container = document.getElementById('language-pills');
   if (!container) return;
+  const data = appState.languagesData;
+  if (!data || !data.length) return;
   let html = '';
-  Object.entries(langs).sort((a, b) => b[1] - a[1]).forEach(([code, count]) => {
+  data.forEach(({ code, count }) => {
     const info = getLangInfo(code);
     if (regionFilter !== 'all' && info.region !== regionFilter && info.region !== 'all') return;
     html += '<button class="lang-pill ' + (appState.activeLanguage === code ? 'active' : '') + '" onclick="renderLanguageSection(\'' + code + '\')">' +
@@ -621,18 +682,34 @@ function renderLanguagePills(regionFilter) {
   container.innerHTML = html || '<p style="grid-column:1/-1;color:var(--text-muted)">No languages found.</p>';
 }
 
-function renderLanguageSection(langCode) {
-  appState.activeLanguage = langCode;
-  document.querySelectorAll('.lang-pill').forEach(el => el.classList.remove('active'));
-  const pillIdx = Array.from(document.querySelectorAll('.lang-pill')).findIndex(p => p.textContent.includes(getLangInfo(langCode).name));
-  if (pillIdx !== -1) document.querySelectorAll('.lang-pill')[pillIdx].classList.add('active');
-  const panel = document.getElementById('lang-movies-panel');
-  const title = document.getElementById('panel-title');
-  const info = getLangInfo(langCode);
-  const movies = appState.movies.filter(m => m.original_language === langCode).sort((a, b) => b.popularity - a.popularity).slice(0, 24);
-  if (title) title.innerHTML = info.flag + ' ' + info.name + ' Movies';
-  renderGrid(movies, 'lang-movies-grid');
-  if (panel) { panel.style.display = 'block'; panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }
+async function renderLanguageSection(langCode) {
+    appState.activeLanguage = langCode;
+    document.querySelectorAll('.lang-pill').forEach(el => el.classList.remove('active'));
+    const pillIdx = Array.from(document.querySelectorAll('.lang-pill')).findIndex(p => p.textContent.includes(getLangInfo(langCode).name));
+    if (pillIdx !== -1) document.querySelectorAll('.lang-pill')[pillIdx].classList.add('active');
+    const panel = document.getElementById('lang-movies-panel');
+    const title = document.getElementById('panel-title');
+    const info = getLangInfo(langCode);
+    if (title) title.innerHTML = info.flag + ' ' + info.name + ' Movies';
+
+    // Show loading state
+    const gridEl = document.getElementById('lang-movies-grid');
+    if (gridEl) gridEl.innerHTML = '<div class="loading-skeleton-grid">' + Array(6).fill('<div class="skeleton-card"></div>').join('') + '</div>';
+    if (panel) { panel.style.display = 'block'; panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }
+
+    try {
+      const res = await fetch(CONFIG.API_BASE + '/language/' + langCode + '?limit=24');
+      const movies = await res.json();
+      cacheMovies(movies);
+      renderGrid(movies, 'lang-movies-grid');
+    } catch (err) {
+      console.error('Failed to load language movies:', err);
+      if (gridEl) gridEl.innerHTML = '<div class="empty-state"><span class="empty-icon">\u26a0\ufe0f</span><h3>Failed to load</h3></div>';
+    }
+  }language === langCode).sort((a, b) => b.popularity - a.popularity).slice(0, 24);
+if (title) title.innerHTML = info.flag + ' ' + info.name + ' Movies';
+renderGrid(movies, 'lang-movies-grid');
+if (panel) { panel.style.display = 'block'; panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }
 }
 
 function closeLanguageSection() {
@@ -645,9 +722,17 @@ function closeLanguageSection() {
 // ============================================================
 // MODAL
 // ============================================================
-function openMovieModal(id) {
-  const movie = appState.movies.find(m => m.id == id);
-  if (!movie) return;
+async function openMovieModal(id) {
+  let movie = appState.moviesById[id];
+  if (!movie) {
+    // Fetch from API if not in cache
+    try {
+      const _res = await fetch(CONFIG.API_BASE + '/movies/' + id);
+      if (!_res.ok) { showToast('Movie not found'); return; }
+      movie = await _res.json();
+      cacheMovies([movie]);
+    } catch (_err) { showToast('Failed to load movie details'); return; }
+  }
   const modal = document.getElementById('modal-overlay');
   const body = document.getElementById('modal-body');
   const inWl = appState.watchlist.includes(parseInt(movie.id, 10));
@@ -673,8 +758,9 @@ function openMovieModal(id) {
   const numId = parseInt(movie.id) || 0;
   const h1 = numId % 360; const h2 = (h1 + 60) % 360;
   const grad = 'linear-gradient(135deg,hsl(' + h1 + ',80%,30%),hsl(' + h2 + ',80%,20%))';
-  const posterHtml = movie.poster_url ? '<img src="' + movie.poster_url + '" class="modal-backdrop-img" alt="" referrerpolicy="no-referrer" onerror="this.style.display=\'none\'">' : '<div style="width:100%;height:100%;background:' + grad + ';display:flex;align-items:center;justify-content:center;font-size:10rem;">' + getEmojiForMovie(movie) + '</div>';
-  const posterLgHtml = movie.poster_url ? '<img src="' + movie.poster_url + '" alt="" referrerpolicy="no-referrer" onerror="handlePosterError(this)">' : '<div class="poster-fallback" style="height:100%"><span class="fallback-emoji" style="font-size:5rem">' + getEmojiForMovie(movie) + '</span></div>';
+  const modalPosterUrl = getProxiedPosterUrl(movie.poster_url);
+  const posterHtml = modalPosterUrl ? '<img src="' + modalPosterUrl + '" class="modal-backdrop-img" alt="" referrerpolicy="no-referrer" onerror="this.style.display=\'none\'">' : '<div style="width:100%;height:100%;background:' + grad + ';display:flex;align-items:center;justify-content:center;font-size:10rem;">' + getEmojiForMovie(movie) + '</div>';
+  const posterLgHtml = modalPosterUrl ? '<img src="' + modalPosterUrl + '" alt="" referrerpolicy="no-referrer" onerror="handlePosterError(this)">' : '<div class="poster-fallback" style="height:100%"><span class="fallback-emoji" style="font-size:5rem">' + getEmojiForMovie(movie) + '</span></div>';
 
   body.innerHTML =
     '<div class="modal-backdrop-wrap">' + posterHtml + '<div class="modal-backdrop-grad"></div></div>' +
@@ -897,7 +983,7 @@ function buildStreamUrl(source, movie, episode) {
 }
 
 function switchStreamSource(source, movieId) {
-  const movie = appState.movies.find(m => m.id == movieId);
+  const movie = appState.moviesById[movieId];
   if (!movie) return;
 
   // If source is null, reuse active source (episode change)
@@ -1095,12 +1181,12 @@ function renderCinevaultProviders() {
       const dubLen = (cinevaultEpisodes[p].episodes.dub || []).length;
       if (subLen > 0 || dubLen > 0) {
         if (!firstProvider) firstProvider = 'cv_' + p;
-        
+
         const btn = container.querySelector(`[data-source="cv_${p}"]`);
         if (btn) {
           btn.title = `${subLen + dubLen} episodes available`;
           // Add a subtle badge or styling if desired, but for now just marking it as loaded
-          btn.style.borderColor = 'rgba(16, 185, 129, 0.4)'; 
+          btn.style.borderColor = 'rgba(16, 185, 129, 0.4)';
         }
       }
     }
@@ -1363,7 +1449,7 @@ async function streamMagnet(magnet, containerId) {
 }
 
 async function playTorrentEpisode(movieId, ep) {
-  const movie = appState.movies.find(m => m.id == movieId);
+  const movie = appState.moviesById[movieId];
   if (!movie) return;
   const title = movie.title;
 
@@ -1393,7 +1479,7 @@ async function playTorrentEpisode(movieId, ep) {
 }
 
 async function playMovieTorrent(movieId) {
-  const movie = appState.movies.find(m => m.id == movieId);
+  const movie = appState.moviesById[movieId];
   if (!movie) return;
   const title = movie.title;
 
@@ -1402,7 +1488,7 @@ async function playMovieTorrent(movieId) {
 
   showToast('🔎 Searching YTS for "' + title + '"...');
   const result = await fetchYTSTorrents(movie);
-  
+
   if (!result || !result.torrents.length) {
     showToast('❌ No torrent found for movie');
     if (container) {
@@ -1415,7 +1501,7 @@ async function playMovieTorrent(movieId) {
     }
     return;
   }
-  
+
   const best = result.torrents[0];
   const magnet = buildMagnet(best.hash, movie.title);
   await streamMagnet(magnet, 'player-container');
@@ -1507,7 +1593,7 @@ function switchAnimeSource(source, movieId) {
 
 // Play the currently selected episode via the active source
 async function playAnimeEpisodeNow(movieId) {
-  const movie = appState.movies.find(m => m.id == movieId);
+  const movie = appState.moviesById[movieId];
   if (!movie) return;
 
   const source = activeAnimeSource || 'direct';
@@ -1832,7 +1918,7 @@ function loadWebTorrent() {
 // ANIMEPAHE DIRECT PLAYER (via Flask Manifest Proxy)
 // ============================================================
 async function playAnimepaheEpisode(movieId, ep) {
-  const movie = appState.movies.find(m => m.id == movieId);
+  const movie = appState.moviesById[movieId];
   if (!movie) return;
 
   const container = document.getElementById('anime-player-container');
@@ -2013,7 +2099,7 @@ async function playDirectHLS(movieId) {
 }
 
 async function playCinevaultProvider(provider, movieId, ep) {
-  const movie = appState.movies.find(m => m.id == movieId);
+  const movie = appState.moviesById[movieId];
   if (!movie) return;
 
   const epSelect = document.getElementById('anime-ep-select');
