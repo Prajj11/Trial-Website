@@ -39,10 +39,52 @@ PORT = 8090
 app = Flask(__name__, static_folder=BASE_DIR)
 CORS(app)
 
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'api'))
-from torrent import torrent_bp
+from api.torrent import torrent_bp
 app.register_blueprint(torrent_bp)
+
+
+# --- Cache eviction ---
+# All in-memory caches (_anikoto_cache, _jikan_cache, _anilist_cache,
+# _stream_cache) store entries with timestamps but never evict expired keys.
+# This leads to unbounded memory growth as unique queries accumulate.
+# A background thread sweeps every 5 minutes to remove stale entries.
+
+def _evict_expired_caches():
+    """Remove expired entries from all in-memory caches."""
+    now = time.time()
+    evicted = 0
+
+    # (cache_dict, ttl_seconds) pairs
+    caches = [
+        ('_anikoto_cache', _ANIKOTO_CACHE_TTL if '_ANIKOTO_CACHE_TTL' in dir() else 600),
+        ('_jikan_cache', _JIKAN_CACHE_TTL if '_JIKAN_CACHE_TTL' in dir() else 900),
+        ('_stream_cache', _STREAM_CACHE_TTL if '_STREAM_CACHE_TTL' in dir() else 300),
+    ]
+
+    for cache_name, ttl in caches:
+        cache = globals().get(cache_name, {})
+        stale_keys = [k for k, (_, ts) in cache.items() if now - ts > ttl]
+        for k in stale_keys:
+            del cache[k]
+            evicted += 1
+
+    # _anilist_cache stores plain values (no timestamp), so we skip it
+    # — it's bounded by the number of unique MAL IDs, which is finite.
+
+    if evicted:
+        print(f'[Cache Eviction] Removed {evicted} expired entries.')
+
+
+def _start_cache_evictor(interval_seconds=300):
+    """Start a repeating background timer that evicts expired cache entries."""
+    def _run():
+        _evict_expired_caches()
+        _start_cache_evictor(interval_seconds)
+    t = threading.Timer(interval_seconds, _run)
+    t.daemon = True
+    t.start()
+
+_start_cache_evictor(300)  # Every 5 minutes
 
 
 # --- Database helpers ---
@@ -406,6 +448,29 @@ def poster_proxy():
         return f'Proxy error: {e}', 502
 
 
+import urllib.parse
+@app.route('/api/imdb-poster', methods=['GET'])
+def get_imdb_poster():
+    """Fetch poster URL from IMDB suggestion API using a movie title."""
+    title = request.args.get('title', '').strip()
+    if not title:
+        return jsonify({'error': 'Missing title'}), 400
+    try:
+        q = urllib.parse.quote(title.lower())
+        first_letter = q[0] if q else 'a'
+        url = f"https://v3.sg.media-imdb.com/suggestion/{first_letter}/{q}.json"
+        r = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=5)
+        if r.status_code == 200:
+            data = r.json()
+            if 'd' in data and len(data['d']) > 0:
+                for item in data['d']:
+                    if 'i' in item and 'imageUrl' in item['i']:
+                        return jsonify({'url': item['i']['imageUrl']})
+        return jsonify({'error': 'Poster not found'}), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/movies/batch', methods=['GET'])
 def get_movies_batch():
     """Fetch multiple movies by IDs (for watchlist)."""
@@ -683,15 +748,31 @@ _jikan_cache = {}
 _JIKAN_CACHE_TTL = 900  # 15 minutes (Jikan data doesn't change often)
 _JIKAN_API_BASE = 'https://api.jikan.moe/v4'
 
+# --- Jikan rate-limit throttle ---
+# Jikan allows 3 requests per second. We proactively enforce a minimum
+# 350ms gap between requests to stay under the limit instead of
+# hammering the API and reacting to 429s after the fact.
+_jikan_last_request_time = 0
+_jikan_rate_lock = threading.Lock()
+_JIKAN_MIN_INTERVAL = 0.35  # 350ms between requests (~2.85 req/s)
+
 
 def _jikan_get(path, params=None):
-    """Fetch from Jikan API with caching and rate-limit awareness."""
+    """Fetch from Jikan API with caching, rate-limit throttle, and graceful degradation."""
+    global _jikan_last_request_time
     cache_key = 'jikan:' + path + (json.dumps(params, sort_keys=True) if params else '')
     now = time.time()
     if cache_key in _jikan_cache:
         data, ts = _jikan_cache[cache_key]
         if now - ts < _JIKAN_CACHE_TTL:
             return data
+
+    # Proactive throttle: wait if we're requesting too fast
+    with _jikan_rate_lock:
+        elapsed = time.time() - _jikan_last_request_time
+        if elapsed < _JIKAN_MIN_INTERVAL:
+            time.sleep(_JIKAN_MIN_INTERVAL - elapsed)
+        _jikan_last_request_time = time.time()
 
     try:
         resp = requests.get(
@@ -702,10 +783,13 @@ def _jikan_get(path, params=None):
         )
         # Jikan returns 429 on rate limit
         if resp.status_code == 429:
-            print(f'[Jikan] Rate limited on {path}, returning cached or None')
+            retry_after = int(resp.headers.get('Retry-After', 2))
+            print(f'[Jikan] Rate limited on {path}, retry_after={retry_after}s')
             if cache_key in _jikan_cache:
                 return _jikan_cache[cache_key][0]
-            return None
+            # Return a structured error so callers can distinguish
+            # "no data" from "temporarily rate-limited"
+            return {'_rate_limited': True, 'retry_after': retry_after}
         resp.raise_for_status()
         data = resp.json()
         _jikan_cache[cache_key] = (data, now)
@@ -736,6 +820,11 @@ def jikan_search():
 
     if not data:
         return jsonify({'ok': False, 'error': 'Jikan API unavailable'}), 502
+    if isinstance(data, dict) and data.get('_rate_limited'):
+        retry = data.get('retry_after', 2)
+        resp = jsonify({'ok': False, 'error': 'Jikan rate limit exceeded. Please retry shortly.', 'retry_after': retry})
+        resp.headers['Retry-After'] = str(retry)
+        return resp, 429
 
     results = []
     for item in data.get('data', []):
@@ -769,6 +858,11 @@ def jikan_anime_details(mal_id):
     Returns: detailed anime info including synopsis, score, genres, studios.
     """
     data = _jikan_get(f'/anime/{mal_id}/full')
+    if isinstance(data, dict) and data.get('_rate_limited'):
+        retry = data.get('retry_after', 2)
+        resp = jsonify({'ok': False, 'error': 'Jikan rate limit exceeded. Please retry shortly.', 'retry_after': retry, 'mal_id': mal_id})
+        resp.headers['Retry-After'] = str(retry)
+        return resp, 429
     if not data or not data.get('data'):
         return jsonify({'ok': False, 'error': 'Anime not found on MAL', 'mal_id': mal_id}), 404
 
@@ -821,6 +915,11 @@ def jikan_anime_episodes(mal_id):
     page = max(1, int(request.args.get('page', 1)))
     data = _jikan_get(f'/anime/{mal_id}/episodes', {'page': page})
 
+    if isinstance(data, dict) and data.get('_rate_limited'):
+        retry = data.get('retry_after', 2)
+        resp = jsonify({'ok': False, 'error': 'Jikan rate limit exceeded. Please retry shortly.', 'retry_after': retry, 'mal_id': mal_id})
+        resp.headers['Retry-After'] = str(retry)
+        return resp, 429
     if not data:
         return jsonify({'ok': False, 'error': 'Failed to fetch episodes', 'mal_id': mal_id}), 502
 
@@ -945,7 +1044,7 @@ def get_stream_provider(provider, anilist_id, audio, provider_ep_id):
     Get streaming URLs for an episode via a specific provider on CineVault-API.
 
     Handles the different response shapes from each provider:
-      - anineko/animegg/anidbapp: {streams: [{url, type, referer, ...}]}
+      - anineko/animegg: {streams: [{url, type, referer, ...}]}
       - animepahe: {streams: [{url, type: "hls"/"embed", quality, referer, ...}]}
       - reanime:  {streams: [...], stream_url, subtitles, ...}
       - anikoto:  {ssub: {streams: [...]}} or {sdub: {streams: [...]}}
@@ -1010,7 +1109,7 @@ def get_stream_provider(provider, anilist_id, audio, provider_ep_id):
     # --- Collect stream arrays from the various response shapes ---
     streams_arrays = []
 
-    # Shape: {streams: [...]}  (anineko, animepahe, reanime, animegg, anidbapp)
+    # Shape: {streams: [...]}  (anineko, animepahe, reanime, animegg)
     if 'streams' in info and isinstance(info['streams'], list):
         streams_arrays.append(info['streams'])
 
@@ -1179,7 +1278,7 @@ def anikoto_search_fast():
 
 
 # ============================================================
-# ANIMEPAHE PROXY ENDPOINTS (via local Node API)
+# ANIMEPAHE PROXY ENDPOINTS (optional legacy local Node API)
 # ============================================================
 
 ANIMEPAHE_API_BASE = 'http://localhost:3000/api'
@@ -1210,7 +1309,12 @@ def animepahe_status():
     global _animepahe_node_last_check
     _animepahe_node_last_check = 0  # Force re-check
     available = _animepahe_node_available()
-    return jsonify({'ok': available, 'node_api': 'http://localhost:3000', 'message': 'AnimePahe Node API is ' + ('running' if available else 'not running')})
+    return jsonify({
+        'ok': available,
+        'node_api': 'http://localhost:3000',
+        'optional': True,
+        'message': 'Legacy AnimePahe Node API is ' + ('running' if available else 'not running; provider fallback uses CineVault-API on port 4000')
+    })
 
 
 @app.route('/api/animepahe/search', methods=['GET'])
@@ -1226,7 +1330,7 @@ def animepahe_search():
 
     # Fast-fail if Node API isn't running
     if not _animepahe_node_available():
-        return jsonify({'ok': False, 'error': 'AnimePahe Node API is not running. Start it with: cd animepahe-api--main && node app.js'}), 503
+        return jsonify({'ok': False, 'error': 'Legacy AnimePahe Node API is not running. Provider fallback is available through CineVault-API on port 4000.'}), 503
 
     try:
         # Query the local Node API — fast timeout so fallback to Videasy is instant
@@ -1274,7 +1378,7 @@ def animepahe_episodes():
 
     # Fast-fail if Node API isn't running
     if not _animepahe_node_available():
-        return jsonify({'ok': False, 'error': 'AnimePahe Node API is not running'}), 503
+        return jsonify({'ok': False, 'error': 'Legacy AnimePahe Node API is not running. Provider fallback is available through CineVault-API on port 4000.'}), 503
 
     try:
         # The Node API route for episodes is /:id/releases (fast timeout for quick fallback)
@@ -1302,7 +1406,7 @@ def animepahe_stream():
 
     # Fast-fail if Node API isn't running
     if not _animepahe_node_available():
-        return jsonify({'ok': False, 'error': 'AnimePahe Node API is not running'}), 503
+        return jsonify({'ok': False, 'error': 'Legacy AnimePahe Node API is not running. Provider fallback is available through CineVault-API on port 4000.'}), 503
 
     try:
         resp = requests.get(

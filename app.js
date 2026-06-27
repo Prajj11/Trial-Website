@@ -3,7 +3,7 @@
    ====================================================== */
 
 // --- Config ---
-const CONFIG = { PAGE_SIZE: 24, API_BASE: '/api' };
+const CONFIG = { PAGE_SIZE: 24, API_BASE: '/api', JSON_URL: '/api/movies/all' };
 
 // --- Image fallback helper ---
 // Tries to build a working poster URL when the primary one fails.
@@ -666,7 +666,14 @@ const handleSearchInput = debounce(function (e) {
     '<div class="sugg-poster">' + (m.poster_url ? '<img src="' + m.poster_url + '" style="width:100%;height:100%;object-fit:cover;border-radius:6px" alt="" referrerpolicy="no-referrer" onerror="this.style.display=\'none\'">' : getEmojiForMovie(m)) + '</div>' +
     '<div class="sugg-info">' +
     '<div class="sugg-title">' + escapeHtml(m.title) + '</div>' +
-    '<div class="sugg-meta">' + getYear(m.release_date) + ' • ' + m.original_language.toUpperCase() + ' �function renderLanguagePills(regionFilter) {
+    '<div class="sugg-meta">' + getYear(m.release_date) + ' • ' + m.original_language.toUpperCase() + '</div>' +
+    '</div></div>'
+  ).join('');
+  suggBox.style.display = 'block';
+}, 300);
+
+// --- Languages & Regions ---
+function renderLanguagePills(regionFilter) {
   const container = document.getElementById('language-pills');
   if (!container) return;
   const data = appState.languagesData;
@@ -706,10 +713,7 @@ async function renderLanguageSection(langCode) {
       console.error('Failed to load language movies:', err);
       if (gridEl) gridEl.innerHTML = '<div class="empty-state"><span class="empty-icon">\u26a0\ufe0f</span><h3>Failed to load</h3></div>';
     }
-  }language === langCode).sort((a, b) => b.popularity - a.popularity).slice(0, 24);
-if (title) title.innerHTML = info.flag + ' ' + info.name + ' Movies';
-renderGrid(movies, 'lang-movies-grid');
-if (panel) { panel.style.display = 'block'; panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }
+
 }
 
 function closeLanguageSection() {

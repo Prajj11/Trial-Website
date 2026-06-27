@@ -3,20 +3,42 @@ import worker from "./index.js";
 
 const PORT = process.env.PORT ?? 4000;
 
+// --- Node version check ---
+// duplex: "half" in Request requires Node 18+. Fail fast with a clear message
+// instead of crashing with a cryptic error at runtime.
+const nodeMajor = parseInt(process.versions.node.split(".")[0], 10);
+if (nodeMajor < 18) {
+  console.error(
+    `\n  ❌ CineVault API requires Node.js 18 or later (found v${process.versions.node}).` +
+    `\n     Please upgrade: https://nodejs.org/\n`
+  );
+  process.exit(1);
+}
+
 async function nodeToRequest(req) {
-  const host = req.headers["host"] ?? `localhost:${PORT}`;
+  const host = req.headers["host"]
+    ?? (req.socket ? `localhost:${req.socket.localPort || PORT}` : `localhost:${PORT}`);
   const url = `http://${host}${req.url}`;
 
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
   const body = chunks.length ? Buffer.concat(chunks) : null;
+  const hasBody = body?.length > 0;
 
-  return new Request(url, {
+  const init = {
     method: req.method,
     headers: req.headers,
-    body: body?.length ? body : undefined,
-    duplex: "half",
-  });
+    body: hasBody ? body : undefined,
+  };
+
+  // duplex: "half" is only required (and only valid) when a body is present.
+  // Setting it unconditionally breaks on Node versions that don't expect it
+  // for bodyless requests.
+  if (hasBody) {
+    init.duplex = "half";
+  }
+
+  return new Request(url, init);
 }
 
 const server = http.createServer(async (req, res) => {
@@ -48,5 +70,4 @@ server.listen(PORT, () => {
   console.log(`  GET /watch/anikoto/:id/sub|dub/anikoto-:ep`);
   console.log(`  GET /watch/animegg/:id/sub|dub/animegg-:ep`);
   console.log(`  GET /watch/anineko/:id/sub|dub/anineko-:ep`);
-  console.log(`  GET /watch/anidbapp/:id/sub|dub/anidbapp-:ep`);
 });

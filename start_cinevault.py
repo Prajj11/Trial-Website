@@ -1,7 +1,7 @@
 """
 CineVault Launcher
 ==================
-Starts the Flask server and opens the application in Mozilla Firefox.
+Starts the local CineVault services and opens the application.
 """
 
 import os
@@ -11,13 +11,60 @@ import webbrowser
 import time
 import socket
 
-PORT = 8090
-URL = f"http://localhost:{PORT}"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+FLASK_PORT = 8090
+CINEVAULT_API_PORT = 4000
+TORRENT_STREAM_PORT = 9411
+ANIMEPAHE_LEGACY_PORT = 3000
+URL = f"http://localhost:{FLASK_PORT}"
 
-def is_server_running():
-    """Check if the port is already open/in use."""
+CREATE_FLAGS = subprocess.CREATE_NEW_CONSOLE if os.name == 'nt' else 0
+
+
+def is_port_open(port):
+    """Check if a local port is already open/in use."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        return s.connect_ex(('localhost', PORT)) == 0
+        return s.connect_ex(('localhost', port)) == 0
+
+
+def wait_for_port(port, timeout=8):
+    """Wait briefly for a service to bind its port."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if is_port_open(port):
+            return True
+        time.sleep(0.2)
+    return False
+
+
+def npm_command():
+    """Use npm.cmd on Windows to avoid PowerShell execution policy issues."""
+    return "npm.cmd" if os.name == 'nt' else "npm"
+
+
+def start_service(name, port, command, cwd=BASE_DIR, timeout=8):
+    """Start a service if its port is not already listening."""
+    if is_port_open(port):
+        print(f"{name} is already running on port {port}.")
+        return True
+
+    print(f"Starting {name} on port {port}...")
+    try:
+        subprocess.Popen(
+            command,
+            cwd=cwd,
+            creationflags=CREATE_FLAGS
+        )
+    except FileNotFoundError as exc:
+        print(f"Could not start {name}: {exc}")
+        return False
+
+    if wait_for_port(port, timeout=timeout):
+        print(f"{name} is running.")
+        return True
+
+    print(f"{name} did not respond on port {port} within {timeout} seconds.")
+    return False
 
 def find_firefox():
     """Locate the Firefox executable on Windows."""
@@ -34,42 +81,42 @@ def find_firefox():
 def main():
     print("Starting CineVault launcher...")
 
-    # 1. Start the Flask server if it is not already running
-    if not is_server_running():
-        print("Server is not running. Starting server.py...")
-        # Start server as a background process
-        subprocess.Popen(
-            [sys.executable, "-X", "utf8", "server.py"],
-            creationflags=subprocess.CREATE_NEW_CONSOLE if os.name == 'nt' else 0
-        )
-        
-        print("Starting CineVault API on port 4000...")
-        cinevault_api_dir = os.path.join(os.path.dirname(__file__), "CineVault-API")
-        subprocess.Popen(
-            ["cmd.exe", "/c", "npm start"],
-            cwd=cinevault_api_dir,
-            creationflags=subprocess.CREATE_NEW_CONSOLE if os.name == 'nt' else 0
-        )
-        # Give it up to 2 seconds to spin up, checking every 100ms
-        for _ in range(20):
-            if is_server_running():
-                break
-            time.sleep(0.1)
-    else:
-        print("Server is already running.")
+    start_service(
+        "Flask backend",
+        FLASK_PORT,
+        [sys.executable, "-X", "utf8", "server.py"],
+        cwd=BASE_DIR
+    )
 
-    # 2. Find and register Firefox
+    start_service(
+        "CineVault provider API",
+        CINEVAULT_API_PORT,
+        ["node", "server.js"],
+        cwd=os.path.join(BASE_DIR, "CineVault-API")
+    )
+
+    start_service(
+        "WebTorrent stream server",
+        TORRENT_STREAM_PORT,
+        ["node", "torrent-stream-server.js"],
+        cwd=BASE_DIR
+    )
+
+    if is_port_open(ANIMEPAHE_LEGACY_PORT):
+        print(f"Optional legacy AnimePahe API is running on port {ANIMEPAHE_LEGACY_PORT}.")
+    else:
+        print("Optional legacy AnimePahe API is not running on port 3000; provider fallback remains available through port 4000.")
+
+    # Find and register Firefox
     firefox_path = find_firefox()
     if firefox_path:
         print(f"Firefox located at: {firefox_path}")
-        # Register Firefox with python's webbrowser
         webbrowser.register('firefox', None, webbrowser.BackgroundBrowser(firefox_path))
         browser = webbrowser.get('firefox')
     else:
         print("Firefox not found in standard paths. Falling back to default system browser.")
         browser = webbrowser
 
-    # 3. Open the URL
     print(f"Opening {URL}...")
     browser.open(URL)
     print("CineVault is ready!")

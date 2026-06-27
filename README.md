@@ -48,26 +48,32 @@ CineVault is a premium, high-performance web application for discovering and str
 Ensure you have Python 3.8+ installed on your system.
 
 ### 2. Install Dependencies
-Install the required libraries using `pip`:
+Install the required Python libraries:
 ```bash
-pip install flask flask-cors requests
+python -m pip install -r requirements.txt
 ```
 
-### 3. Initialize the Database
-Import the movie/anime CSV records and build the SQLite index:
+Install the Node dependencies:
+```bash
+npm install
+```
+
+### 3. Verify the Database
+Check that the bundled SQLite database is readable:
 ```bash
 python init_db.py
 ```
-This generates the core `cinevault.db` file (~18.6 MB).
 
 ### 4. Run the Project
-Start the Flask dev server:
+Start the app and its local helper services:
 ```bash
-python server.py
+python start_cinevault.py
 ```
 
 Open your browser and navigate to:
 👉 **[http://localhost:8090](http://localhost:8090)**
+
+The launcher starts the Flask backend on `8090`, the provider API on `4000`, and the WebTorrent stream server on `9411`. The older AnimePahe helper on `3000` is optional; the app can still fall back through the provider API.
 
 ---
 

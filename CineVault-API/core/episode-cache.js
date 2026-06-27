@@ -38,7 +38,7 @@ function latestEpisodeFromResponse(data) {
 }
 
 function hasCurrentProviders(data) {
-  return data && Object.prototype.hasOwnProperty.call(data, "anidbapp");
+  return data && Object.prototype.hasOwnProperty.call(data, "anineko");
 }
 
 function latestEpisodeFromAniZip(anizip) {
@@ -55,7 +55,7 @@ function resolveShared(anilistId, freshMedia = false) {
 }
 
 async function clearProviderCache(anilistId, media) {
-  for (const p of ["pahe", "manga", "reanime", "anikoto", "animegg", "anineko", "anidbapp"]) {
+  for (const p of ["pahe", "manga", "reanime", "anikoto", "animegg", "anineko"]) {
     await delAsync(`epv:${p}:${anilistId}`);
   }
   if (media?.idMal) {

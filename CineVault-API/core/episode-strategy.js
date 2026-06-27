@@ -8,7 +8,6 @@ import { getEpisodes as reanimeEpisodes } from "../providers/reanime.js";
 import { getEpisodes as anikotoEpisodes } from "../providers/anikoto.js";
 import { getEpisodes as animeggEpisodes } from "../providers/animegg.js";
 import { getEpisodes as aninekoEpisodes } from "../providers/anineko.js";
-import { getEpisodes as anidbappEpisodes } from "../providers/anidbapp.js";
 const JIKAN = "https://api.jikan.moe/v4";
 const UA    = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
@@ -165,14 +164,13 @@ export async function buildEpisodesWithCache(anilistId, media, anizip) {
 
   const ctx = { media, anizip, jikanEps, maxPages: undefined };
 
-  const [pahe, reanime, anikoto, animegg, anineko, anidbapp] = await Promise.all([
+  const [pahe, reanime, anikoto, animegg, anineko] = await Promise.all([
     safe("pahe",     () => withCache(`epv:pahe:${anilistId}`,    status, () => paheEpisodes(anilistId, ctx))),
 
     safe("reanime",  () => withCache(`epv:reanime:${anilistId}`, status, () => reanimeEpisodes(anilistId, ctx))),
     safe("anikoto",  () => withCache(`epv:anikoto:${anilistId}`, status, () => anikotoEpisodes(anilistId, ctx))),
     safe("animegg",  () => withCache(`epv:animegg:${anilistId}`, status, () => animeggEpisodes(anilistId, ctx))),
     safe("anineko",  () => withCache(`epv:anineko:${anilistId}`, status, () => aninekoEpisodes(anilistId, ctx))),
-    safe("anidbapp", () => withCache(`epv:anidbapp:${anilistId}`, status, () => anidbappEpisodes(anilistId, ctx))),
   ]);
 
   return {
@@ -182,6 +180,5 @@ export async function buildEpisodesWithCache(anilistId, media, anizip) {
     anikoto:   anikoto.ok ? anikoto.data : { error: anikoto.error, stack: anikoto.stack },
     animegg:   animegg.ok ? animegg.data : { error: animegg.error, stack: animegg.stack },
     anineko:   anineko.ok ? anineko.data : { error: anineko.error, stack: anineko.stack },
-    anidbapp:  anidbapp.ok ? anidbapp.data : { error: anidbapp.error, stack: anidbapp.stack },
   };
 }
