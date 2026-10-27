@@ -1,3 +1,4 @@
 flask
 flask-cors
 requests
+truststore>=0.10

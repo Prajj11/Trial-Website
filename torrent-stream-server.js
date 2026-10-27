@@ -1,190 +1,132 @@
 import express from 'express';
 import WebTorrent from 'webtorrent';
-import cors from 'cors';
+import { pathToFileURL } from 'node:url';
 
-const app = express();
-const client = new WebTorrent();
-
-app.use(cors());
-app.use(express.json());
-
-const activeTorrents = new Map();
-// Track last access time for each torrent to enable idle cleanup
-const torrentLastAccess = new Map();
-
-const IDLE_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
-
-// --- Idle Reaper ---
-// Periodically destroys torrents that haven't been accessed in 15 minutes.
-// Without this, torrents stay seeding in memory/disk indefinitely if a user
-// closes their browser without triggering the DELETE endpoint.
-const reaperInterval = setInterval(() => {
-    const now = Date.now();
-    for (const [infoHash, lastAccess] of torrentLastAccess.entries()) {
-        if (now - lastAccess > IDLE_TIMEOUT_MS) {
-            const torrent = activeTorrents.get(infoHash);
-            if (torrent) {
-                console.log(`[Reaper] Destroying idle torrent: ${infoHash} (idle ${Math.round((now - lastAccess) / 1000)}s)`);
-                activeTorrents.delete(infoHash);
-                torrentLastAccess.delete(infoHash);
-                try {
-                    torrent.destroy();
-                } catch (e) {
-                    console.error('Error destroying torrent:', e);
-                }
-            } else {
-                torrentLastAccess.delete(infoHash);
-            }
-        }
+export function parseRange(header, size) {
+  if (!header) return null;
+  const match = /^bytes=(\d*)-(\d*)$/.exec(header);
+  if (!match || (!match[1] && !match[2])) return false;
+  const start = match[1] ? Number(match[1]) : Math.max(0, size - Number(match[2]));
+  const end = match[1] ? (match[2] ? Math.min(Number(match[2]), size - 1) : size - 1) : size - 1;
+  return Number.isSafeInteger(start) && Number.isSafeInteger(end) && start <= end && start < size
+    ? { start, end } : false;
+}
+function mime(name) {
+  return ({ mp4: 'video/mp4', m4v: 'video/mp4', webm: 'video/webm', mkv: 'video/x-matroska',
+    avi: 'video/x-msvideo', mov: 'video/quicktime' })[name.split('.').pop().toLowerCase()] || 'application/octet-stream';
+}
+export function createApp(client, { metadataTimeout = 25000 } = {}) {
+  const app = express();
+  app.use(express.json({ limit: '32kb' }));
+  const active = new Map();
+  const pending = new Map();
+  client.on('error', err => console.error('Torrent client:', err.message));
+  const reaper = setInterval(() => {
+    for (const [hash, entry] of active) {
+      if (!entry.readers && Date.now() - entry.access > 15 * 60 * 1000) {
+        active.delete(hash);
+        entry.torrent.destroy();
+      }
     }
-}, 60 * 1000); // Check every 60 seconds
-
-// --- Graceful shutdown ---
-// Destroy all active torrents on SIGINT so we don't leave orphaned downloads.
-process.on('SIGINT', () => {
-    console.log('\n[Shutdown] Cleaning up active torrents...');
-    clearInterval(reaperInterval);
-    const promises = [];
-    for (const [infoHash, torrent] of activeTorrents.entries()) {
-        promises.push(new Promise(resolve => {
-            torrent.destroy(() => {
-                console.log(`  Destroyed: ${infoHash}`);
-                resolve();
-            });
-        }));
-    }
-    Promise.all(promises).then(() => {
-        console.log('[Shutdown] All torrents cleaned up.');
-        process.exit(0);
-    });
-    // Force exit after 5s if cleanup hangs
-    setTimeout(() => process.exit(1), 5000);
-});
-
-// Healthcheck
-app.get('/health', (req, res) => res.sendStatus(200));
-
-// Start streaming a magnet link
-app.post('/stream', (req, res) => {
-    const { magnet } = req.body;
-    if (!magnet) return res.status(400).json({ ok: false, error: 'Missing magnet link' });
-
-    client.add(magnet, (torrent) => {
-        activeTorrents.set(torrent.infoHash, torrent);
-        torrentLastAccess.set(torrent.infoHash, Date.now());
-
-        // Find the largest video file
-        const file = torrent.files.find(f => f.name.endsWith('.mp4') || f.name.endsWith('.mkv')) || torrent.files.reduce((a, b) => a.length > b.length ? a : b);
-        if (!file) return res.status(404).json({ ok: false, error: 'No video file found in torrent' });
-
-        // Derive the stream URL from the request's Host header so the URL
-        // works when accessed from other devices on the network (e.g. a phone).
-        // Falls back to localhost:PORT only if no Host header is present.
-        const host = req.headers.host || `localhost:${PORT}`;
-        const protocol = req.protocol || 'http';
-
-        res.json({
-            ok: true,
-            infoHash: torrent.infoHash,
-            fileName: file.name,
-            fileSize: file.length,
-            streamUrl: `${protocol}://${host}/stream/${torrent.infoHash}/${encodeURIComponent(file.name)}`
-        });
-    });
-
-    client.on('error', (err) => {
-        console.error('WebTorrent Error:', err);
-    });
-});
-
-// Get torrent status
-app.get('/status/:infoHash', (req, res) => {
-    const { infoHash } = req.params;
-    const torrent = activeTorrents.get(infoHash);
-    if (!torrent || torrent.destroyed) return res.status(404).json({ ok: false, error: 'Torrent not found' });
-
-    // Update last access time on status check
-    torrentLastAccess.set(infoHash, Date.now());
-
+  }, 60000);
+  reaper.unref();
+  app.locals.cleanup = () => clearInterval(reaper);
+  app.get('/health', (req, res) => res.json({ ok: true }));
+  app.post('/stream', async (req, res) => {
+    const magnet = req.body?.magnet;
+    if (typeof magnet !== 'string' || !/^magnet:\?/i.test(magnet))
+      return res.status(400).json({ ok: false, error: 'Enter a valid magnet link.' });
+    const hash = new URLSearchParams(magnet.slice(magnet.indexOf('?') + 1)).getAll('xt')
+      .map(x => /^urn:btih:([a-f\d]{40}|[a-z2-7]{32})$/i.exec(x)?.[1]).find(Boolean);
+    if (!hash) return res.status(400).json({ ok: false, error: 'Magnet link needs a valid BitTorrent info hash.' });
+    const key = hash.toLowerCase();
     try {
-        res.json({
-            ok: true,
-            progress: torrent.progress,
-            downloadSpeed: torrent.downloadSpeed,
-            uploadSpeed: torrent.uploadSpeed,
-            numPeers: torrent.numPeers,
-            timeRemaining: torrent.timeRemaining
-        });
-    } catch (e) {
-        res.status(500).json({ ok: false, error: 'Failed to read torrent status' });
-    }
-});
-
-// Stop and destroy torrent
-app.delete('/stream/:infoHash', (req, res) => {
-    const { infoHash } = req.params;
-    const torrent = activeTorrents.get(infoHash);
-    if (torrent) {
-        activeTorrents.delete(infoHash);
-        torrentLastAccess.delete(infoHash);
-        try {
-            torrent.destroy(() => {
-                res.json({ ok: true });
-            });
-        } catch (e) {
-            res.json({ ok: false, error: e.message });
-        }
-    } else {
-        torrentLastAccess.delete(infoHash);
-        res.json({ ok: true, message: 'Already destroyed' });
-    }
-});
-
-// HTTP Range proxy for the video stream
-app.get('/stream/:infoHash/:filename', (req, res) => {
-    const { infoHash, filename } = req.params;
-    const torrent = activeTorrents.get(infoHash);
-    if (!torrent || torrent.destroyed) return res.status(404).send('Torrent not found');
-
-    const file = torrent.files.find(f => f.name === filename);
-    if (!file) return res.status(404).send('File not found');
-
-    // Update last access time on every stream request
-    torrentLastAccess.set(infoHash, Date.now());
-
-    const range = req.headers.range;
-    if (!range) {
-        res.writeHead(200, {
-            'Content-Length': file.length,
-            'Content-Type': 'video/mp4'
-        });
-        const stream = file.createReadStream();
-        stream.pipe(res).on('error', (err) => {
-            // Ignore premature close errors (client disconnected)
-        });
-        return;
-    }
-
-    const positions = range.replace(/bytes=/, "").split("-");
-    const start = parseInt(positions[0], 10);
-    const end = positions[1] ? parseInt(positions[1], 10) : file.length - 1;
-    const chunksize = (end - start) + 1;
-
-    res.writeHead(206, {
-        'Content-Range': `bytes ${start}-${end}/${file.length}`,
-        'Accept-Ranges': 'bytes',
-        'Content-Length': chunksize,
-        'Content-Type': 'video/mp4'
-    });
-
-    const stream = file.createReadStream({ start, end });
-    stream.pipe(res).on('error', (err) => {
-        // Ignore premature close errors (client disconnected)
-    });
-});
-
-const PORT = 9411;
-app.listen(PORT, () => {
-    console.log(`Torrent Stream Server running on http://localhost:${PORT}`);
-});
-
+      if (!pending.has(key)) {
+        const ready = (async () => {
+          let torrent = await client.get(magnet);
+          if (torrent?.ready) return torrent;
+          if (!torrent) torrent = client.add(magnet);
+          return await new Promise((resolve, reject) => {
+            const done = err => {
+              clearTimeout(timer);
+              torrent.off('ready', onReady);
+              torrent.off('error', onError);
+              if (err) {
+                if (!torrent.destroyed) torrent.destroy();
+                reject(err);
+              } else resolve(torrent);
+            };
+            const onReady = () => done();
+            const onError = err => done(err);
+            const timer = setTimeout(() => done(new Error('No torrent metadata received. Try a release with active peers.')), metadataTimeout);
+            torrent.once('ready', onReady);
+            torrent.once('error', onError);
+          });
+        })();
+        pending.set(key, ready);
+        ready.finally(() => pending.delete(key)).catch(() => {});
+      }
+      const torrent = await pending.get(key);
+      const files = torrent.files.filter(f => /\.(mp4|m4v|webm|mkv|avi|mov)$/i.test(f.name));
+      files.sort((a, b) => b.length - a.length);
+      const file = files[0];
+      if (!file) {
+        torrent.destroy();
+        return res.status(422).json({ ok: false, error: 'This torrent contains no supported video files.' });
+      }
+      const previous = active.get(torrent.infoHash);
+      active.set(torrent.infoHash, { torrent, access: Date.now(), readers: previous?.readers || 0 });
+      const index = torrent.files.indexOf(file);
+      res.json({ ok: true, infoHash: torrent.infoHash, fileName: file.name, fileIndex: index,
+        fileSize: file.length, mimeType: mime(file.name), browserCompatible: /\.(mp4|m4v|webm)$/i.test(file.name),
+        streamUrl: `/stream/${torrent.infoHash}/${index}` });
+    } catch (err) { res.status(504).json({ ok: false, error: err.message }); }
+  });
+  app.get('/status/:hash', (req, res) => {
+    const entry = active.get(req.params.hash);
+    if (!entry || entry.torrent.destroyed) return res.status(404).json({ ok: false, error: 'Torrent session ended.' });
+    entry.access = Date.now();
+    const t = entry.torrent;
+    res.json({ ok: true, progress: t.progress, downloadSpeed: t.downloadSpeed,
+      uploadSpeed: t.uploadSpeed, numPeers: t.numPeers, timeRemaining: Number.isFinite(t.timeRemaining) ? t.timeRemaining : null });
+  });
+  app.delete('/stream/:hash', (req, res) => {
+    const entry = active.get(req.params.hash);
+    active.delete(req.params.hash);
+    if (entry && !entry.torrent.destroyed) entry.torrent.destroy();
+    res.json({ ok: true });
+  });
+  app.get('/stream/:hash/:file', (req, res) => {
+    const entry = active.get(req.params.hash);
+    if (!entry || entry.torrent.destroyed) return res.status(404).end();
+    const file = /^\d+$/.test(req.params.file) ? entry.torrent.files[Number(req.params.file)]
+      : entry.torrent.files.find(f => f.name === req.params.file);
+    if (!file) return res.status(404).end();
+    entry.access = Date.now();
+    const range = parseRange(req.headers.range, file.length);
+    res.set('Accept-Ranges', 'bytes');
+    if (range === false) return res.status(416).set('Content-Range', `bytes */${file.length}`).end();
+    res.type(mime(file.name));
+    if (req.query.download === '1') res.attachment(file.name);
+    res.set('Content-Length', String(range ? range.end - range.start + 1 : file.length));
+    if (range) res.status(206).set('Content-Range', `bytes ${range.start}-${range.end}/${file.length}`);
+    if (req.method === 'HEAD') return res.end();
+    const stream = file.createReadStream(range || {});
+    entry.readers++;
+    res.once('close', () => { entry.readers--; entry.access = Date.now(); stream.destroy(); });
+    stream.once('error', err => { if (!res.headersSent) res.status(502).end(); else res.destroy(err); });
+    stream.pipe(res);
+  });
+  app.use((err, req, res, next) => res.status(400).json({ ok: false, error: 'Invalid request body.' }));
+  return app;
+}
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  // TCP is more reliable than native uTP on Windows and restricted networks.
+  const client = new WebTorrent({ utp: false });
+  const app = createApp(client);
+  const server = app.listen(Number(process.env.TORRENT_PORT || 9411), '127.0.0.1', () => console.log('Torrent helper ready'));
+  for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => {
+    app.locals.cleanup(); server.close(); client.destroy(() => process.exit(0));
+    setTimeout(() => process.exit(1), 5000).unref();
+  });
+}

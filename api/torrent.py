@@ -12,6 +12,7 @@ Endpoints:
 """
 
 import time
+import os
 import re as _re
 import xml.etree.ElementTree as ET
 import requests
@@ -74,7 +75,10 @@ def nyaa_search():
     q = request.args.get('q', '').strip()
     ep = request.args.get('ep', '').strip()
     quality = request.args.get('quality', '').strip()
-    limit = min(12, max(1, int(request.args.get('limit', 8))))
+    try:
+        limit = min(12, max(1, int(request.args.get('limit', 8))))
+    except ValueError:
+        return jsonify({'ok': False, 'error': 'limit must be a number'}), 400
 
     if not q:
         return jsonify({'ok': False, 'error': 'Missing q'}), 400
@@ -132,6 +136,10 @@ def nyaa_search():
 
             m_el = item.find('nyaa:magnetUri', ns)
             magnet = m_el.text if m_el is not None else ''
+            if not magnet:
+                info_hash = item.findtext('nyaa:infoHash', namespaces=ns) or ''
+                if _re.fullmatch(r'[a-fA-F0-9]{40}', info_hash):
+                    magnet = f'magnet:?xt=urn:btih:{info_hash}&dn={requests.utils.quote(title, safe="")}'
             if not magnet:
                 continue
             magnet = _enrich_magnet(magnet)
@@ -317,7 +325,7 @@ def yts_search():
 
     try:
         resp = requests.get(
-            'https://yts.mx/api/v2/list_movies.json',
+            os.environ.get('YTS_API_BASE', 'https://movies-api.accel.li/api/v2').rstrip('/') + '/list_movies.json',
             params={'query_term': title, 'limit': 5, 'sort_by': 'download_count'},
             timeout=10,
             headers={'Accept': 'application/json'},
@@ -331,8 +339,10 @@ def yts_search():
             (m for m in movies
              if m.get('title', '').lower() == title.lower()
              and (not year or str(m.get('year', '')) == year)),
-            movies[0]
+            None
         )
+        if not best:
+            return jsonify({'ok': False, 'error': 'No matching title and year found. Try the manual search links.'}), 404
 
         QORD = {'2160p': 0, '1080p': 1, '720p': 2, '480p': 3}
         qualities = []
@@ -367,7 +377,7 @@ def yts_search():
 
     except Exception as exc:
         print(f'[YTS] Error: {exc}')
-        return jsonify({'ok': False, 'error': str(exc)}), 500
+        return jsonify({'ok': False, 'error': 'Movie torrent provider unavailable. Please retry or use a manual source.'}), 502
 
 
 # ── /api/subtitle/convert ─────────────────────────────────────────────────────

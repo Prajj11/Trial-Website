@@ -19,7 +19,7 @@ REQUIRED_TABLES = {"content", "genres"}
 def main():
     if not os.path.exists(DB_PATH):
         print("cinevault.db was not found.")
-        print("Restore the database file before starting the app.")
+        print("Run python scripts/rebuild-library.py to rebuild the library.")
         return 1
 
     try:

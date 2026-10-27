@@ -1,5 +1,7 @@
 # 🎬 CineVault
 
+**Repaired local version:** see [REPAIR-NOTES.md](REPAIR-NOTES.md) for verified fixes, startup instructions and external-provider limitations. The missing library has been rebuilt; see [LIBRARY-SOURCES.md](LIBRARY-SOURCES.md).
+
 CineVault is a premium, high-performance web application for discovering and streaming movies, TV shows, and anime. Built with a robust **Flask + SQLite** backend and a stunning, responsive **vanilla HTML/CSS/JS** frontend, CineVault delivers a beautiful, immersive, and fast cinematic experience.
 
 ---
@@ -19,7 +21,7 @@ CineVault is a premium, high-performance web application for discovering and str
 * **AniList Bridge**: Automated MAL-to-AniList ID translation to fetch pre-resolved video assets for smooth anime playback.
 
 ### 📥 Desktop Torrent Integration
-* **One-Click qBittorrent Download**: Instantly searches YTS indexers for high-quality movie prints, resolves the best magnet link, and opens it directly in your desktop qBittorrent client via native protocol handlers.
+* **Download choices**: Searches YTS through the backend and displays quality, size and seed counts. Click a release to open your configured torrent client. The local video player also supports Save video.
 * **Kwik/Anikoto Download Engine**: Direct integration for downloading anime episodes with pagination.
 
 ### 🔍 Discovery & Personalization
@@ -45,7 +47,7 @@ CineVault is a premium, high-performance web application for discovering and str
 ## 🚀 Getting Started
 
 ### 1. Prerequisites
-Ensure you have Python 3.8+ installed on your system.
+Ensure you have Python 3.10+ and Node.js 24+ installed on your system.
 
 ### 2. Install Dependencies
 Install the required Python libraries:
@@ -63,6 +65,8 @@ Check that the bundled SQLite database is readable:
 ```bash
 python init_db.py
 ```
+
+If the database is missing, run `python scripts/rebuild-library.py`. This imports historical movie metadata and a popular anime selection without API keys; it does not reproduce the exact original library.
 
 ### 4. Run the Project
 Start the app and its local helper services:
@@ -99,5 +103,4 @@ CineVault is fully API-driven. The backend provides high-speed, paginated REST e
 ---
 
 ## 🔒 Security & Privacy
-* **Ad-Free Embedded Players**: The player containers use sandboxed iframes.
-* **No Trackers**: Removed all external tracking scripts, advertising links, or flagged domains (such as *autoembed*) to ensure zero antivirus interference.
+External embedded players are operated by third parties and may include advertisements or tracking. Their availability and codec support vary. The local torrent helper runs on loopback and the app does not serve its database or source configuration as static files.

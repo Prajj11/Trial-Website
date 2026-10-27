@@ -3,6 +3,14 @@ import worker from "./index.js";
 
 const PORT = process.env.PORT ?? 4000;
 
+// Bound upstream requests so dead providers cannot leave sessions hanging forever.
+const upstreamFetch = globalThis.fetch;
+globalThis.fetch = (input, init = {}) => {
+  const existing = init.signal || (input instanceof Request ? input.signal : undefined);
+  const timeout = AbortSignal.timeout(12000);
+  return upstreamFetch(input, { ...init, signal: existing ? AbortSignal.any([existing, timeout]) : timeout });
+};
+
 // --- Node version check ---
 // duplex: "half" in Request requires Node 18+. Fail fast with a clear message
 // instead of crashing with a cryptic error at runtime.

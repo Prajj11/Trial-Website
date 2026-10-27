@@ -4,7 +4,8 @@
   "description": "CineVault is a premium, high-performance web application for discovering and streaming movies, TV shows, and anime. Built with a robust **Flask + SQLite** backend and a stunning, responsive **vanilla HTML/CSS/JS** frontend, CineVault delivers a beautiful, immersive, and fast cinematic experience.",
   "main": "app.js",
   "scripts": {
-    "test": "node scripts/check-js.mjs && python -m py_compile server.py start_cinevault.py init_db.py fix_posters.py translate_titles.py api/torrent.py"
+    "start": "python start_cinevault.py",
+    "test": "node scripts/check-js.mjs && node --test tests/stream.test.mjs && python -m unittest discover -s tests -p test_*.py"
   },
   "repository": {
     "type": "git",

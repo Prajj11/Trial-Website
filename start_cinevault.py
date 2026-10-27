@@ -18,7 +18,7 @@ TORRENT_STREAM_PORT = 9411
 ANIMEPAHE_LEGACY_PORT = 3000
 URL = f"http://localhost:{FLASK_PORT}"
 
-CREATE_FLAGS = subprocess.CREATE_NEW_CONSOLE if os.name == 'nt' else 0
+CREATE_FLAGS = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
 
 
 def is_port_open(port):
@@ -81,7 +81,14 @@ def find_firefox():
 def main():
     print("Starting CineVault launcher...")
 
-    start_service(
+    if not os.path.exists(os.path.join(BASE_DIR, 'cinevault.db')):
+        print('Rebuilding missing movie library...')
+        result = subprocess.run([sys.executable, 'scripts/rebuild-library.py'], cwd=BASE_DIR)
+        if result.returncode:
+            print('Library rebuild failed. Check your connection and retry.')
+            return
+
+    backend_ready = start_service(
         "Flask backend",
         FLASK_PORT,
         [sys.executable, "-X", "utf8", "server.py"],
@@ -91,7 +98,7 @@ def main():
     start_service(
         "CineVault provider API",
         CINEVAULT_API_PORT,
-        ["node", "server.js"],
+        ["node", "--use-system-ca", "server.js"],
         cwd=os.path.join(BASE_DIR, "CineVault-API")
     )
 
@@ -117,6 +124,9 @@ def main():
         print("Firefox not found in standard paths. Falling back to default system browser.")
         browser = webbrowser
 
+    if not backend_ready:
+        print('The web app could not start. Review the service error above.')
+        return
     print(f"Opening {URL}...")
     browser.open(URL)
     print("CineVault is ready!")

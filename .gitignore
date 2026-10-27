@@ -22,3 +22,7 @@ venv/
 .vscode/
 .idea/
 .gemini_scratch/
+node_modules/
+*.log
+*.bak
+.test-media/

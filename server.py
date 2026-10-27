@@ -26,6 +26,7 @@ import time
 import subprocess
 import atexit
 import threading
+import api.network
 import requests
 from flask import Flask, request, jsonify, send_from_directory, Response
 from flask_cors import CORS
@@ -36,7 +37,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, 'cinevault.db')
 PORT = 8090
 
-app = Flask(__name__, static_folder=BASE_DIR)
+app = Flask(__name__, static_folder=None)
 CORS(app)
 
 from api.torrent import torrent_bp
@@ -63,9 +64,9 @@ def _evict_expired_caches():
 
     for cache_name, ttl in caches:
         cache = globals().get(cache_name, {})
-        stale_keys = [k for k, (_, ts) in cache.items() if now - ts > ttl]
+        stale_keys = [k for k, (_, ts) in list(cache.items()) if now - ts > ttl]
         for k in stale_keys:
-            del cache[k]
+            cache.pop(k, None)
             evicted += 1
 
     # _anilist_cache stores plain values (no timestamp), so we skip it
@@ -1467,20 +1468,8 @@ def generic_hls_manifest():
         if resp.status_code != 200:
             return f'Failed to fetch manifest: {resp.status_code}', 502
 
-        content = resp.text
-        lines = content.split('\n')
-        for i, line in enumerate(lines):
-            line = line.strip()
-            if line and not line.startswith('#'):
-                resolved_url = urljoin(m3u8_url, line)
-                # Ensure the resolved segment goes back to the proxy, carrying the referer
-                lines[i] = f'/api/proxy/hls/segment?url={requests.utils.quote(resolved_url)}&referer={requests.utils.quote(referer)}'
-            elif line.startswith('#EXT-X-STREAM-INF:'):
-                # The next line will be a sub-manifest, we don't need to do anything special
-                # since the 'not startswith('#')' block will catch it and proxy it.
-                pass
-
-        proxied_content = '\n'.join(lines)
+        from api.hls import rewrite_manifest
+        proxied_content = rewrite_manifest(resp.text, resp.url, referer)
         
         flask_resp = app.make_response(proxied_content)
         flask_resp.headers['Content-Type'] = 'application/x-mpegURL'
@@ -1508,15 +1497,24 @@ def generic_hls_segment():
         if referer:
             headers['Referer'] = referer
 
+        if request.headers.get('Range'):
+            headers['Range'] = request.headers['Range']
         resp = requests.get(segment_url, headers=headers, stream=True, timeout=15)
-        if resp.status_code != 200:
+        if resp.status_code not in (200, 206):
+            resp.close()
             return f'Failed to fetch segment: {resp.status_code}', 502
 
         def generate():
-            for chunk in resp.iter_content(chunk_size=8192):  # 8KB chunks for faster throughput
-                yield chunk
+            try:
+                for chunk in resp.iter_content(chunk_size=8192):
+                    yield chunk
+            finally:
+                resp.close()
 
         flask_resp = app.make_response(generate())
+        flask_resp.status_code = resp.status_code
+        if resp.headers.get('Content-Range'):
+            flask_resp.headers['Content-Range'] = resp.headers['Content-Range']
         flask_resp.headers['Content-Type'] = resp.headers.get('Content-Type', 'video/MP2T')
         flask_resp.headers['Access-Control-Allow-Origin'] = '*'
         return flask_resp
@@ -1530,7 +1528,7 @@ def generic_hls_segment():
 # TORRENT STREAM PROXY (forwards to Node.js WebTorrent server on :9411)
 # ============================================================
 
-TORRENT_STREAM_BASE = 'http://localhost:9411'
+TORRENT_STREAM_BASE = os.environ.get('TORRENT_STREAM_BASE', 'http://127.0.0.1:9411')
 
 def _torrent_server_available():
     """Quick check if the torrent stream server (Node) is up."""
@@ -1569,9 +1567,10 @@ def torrent_stream_start():
         # Rewrite the streamUrl to go through Flask so browser stays on port 8090
         if data.get('ok') and data.get('infoHash') and data.get('fileName'):
             ih = data['infoHash']
-            fn = requests.utils.quote(data['fileName'], safe='')
+            fn = str(data.get('fileIndex', requests.utils.quote(data['fileName'], safe='')))
             data['streamUrl'] = f'/api/torrent-stream/play/{ih}/{fn}'
-        return jsonify(data)
+            data['downloadUrl'] = data['streamUrl'] + '?download=1'
+        return jsonify(data), resp.status_code
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e)}), 500
 
@@ -1581,7 +1580,7 @@ def torrent_stream_status(info_hash):
     """Proxy torrent progress status from Node server."""
     try:
         resp = requests.get(f'{TORRENT_STREAM_BASE}/status/{info_hash}', timeout=5)
-        return jsonify(resp.json())
+        return jsonify(resp.json()), resp.status_code
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e)}), 500
 
@@ -1591,7 +1590,7 @@ def torrent_stream_stop(info_hash):
     """Tell the Node server to destroy the torrent and free memory."""
     try:
         resp = requests.delete(f'{TORRENT_STREAM_BASE}/stream/{info_hash}', timeout=5)
-        return jsonify(resp.json())
+        return jsonify(resp.json()), resp.status_code
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e)}), 500
 
@@ -1603,12 +1602,14 @@ def torrent_stream_play(info_hash, filename):
     server to the browser so the HTML5 <video> player can seek freely.
     """
     node_url = f'{TORRENT_STREAM_BASE}/stream/{info_hash}/{requests.utils.quote(filename, safe="")}'
+    if request.args.get('download') == '1':
+        node_url += '?download=1'
     headers = {}
     if 'Range' in request.headers:
         headers['Range'] = request.headers['Range']
 
     try:
-        resp = requests.get(node_url, headers=headers, stream=True, timeout=60)
+        resp = requests.request(request.method, node_url, headers=headers, stream=True, timeout=60)
         status = resp.status_code  # 206 or 200
 
         forward_headers = {
@@ -1620,11 +1621,19 @@ def torrent_stream_play(info_hash, filename):
             forward_headers['Content-Range'] = resp.headers['Content-Range']
         if 'Content-Length' in resp.headers:
             forward_headers['Content-Length'] = resp.headers['Content-Length']
+        if 'Content-Disposition' in resp.headers:
+            forward_headers['Content-Disposition'] = resp.headers['Content-Disposition']
+        if request.method == 'HEAD':
+            resp.close()
+            return Response(status=status, headers=forward_headers)
 
         def generate():
-            for chunk in resp.iter_content(chunk_size=65536):
-                if chunk:
-                    yield chunk
+            try:
+                for chunk in resp.iter_content(chunk_size=65536):
+                    if chunk:
+                        yield chunk
+            finally:
+                resp.close()
 
         flask_resp = app.make_response(generate())
         flask_resp.status_code = status
@@ -1647,6 +1656,8 @@ def serve_index():
 
 @app.route('/<path:filename>')
 def serve_static(filename):
+    if filename not in {'index.html', 'movies.html', 'app.js', 'style.css', 'refinements.css', 'petals.js', 'anime_bg.png', 'anime_bg_dark.png'}:
+        return 'Not found', 404
     return send_from_directory(BASE_DIR, filename)
 
 
